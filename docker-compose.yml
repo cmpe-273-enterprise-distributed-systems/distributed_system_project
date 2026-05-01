@@ -36,14 +36,8 @@ services:
     container_name: kafka-init
     depends_on:
       - kafka
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      "until kafka-topics --bootstrap-server kafka:29092 --list > /dev/null 2>&1; do
-        echo 'Waiting for Kafka...'
-        sleep 2
-      done
-      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
-        --topic tasks --partitions 4 --replication-factor 1
-      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
-        --topic completed-tasks --partitions 4 --replication-factor 1
-      echo 'Topics created: tasks, completed-tasks'"
+    entrypoint: []
+    command:
+      - /bin/sh
+      - -c
+      - "until kafka-topics --bootstrap-server kafka:29092 --list > /dev/null 2>&1; do echo 'Waiting for Kafka...'; sleep 2; done && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic tasks --partitions 4 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic completed-tasks --partitions 4 --replication-factor 1 && echo 'Topics created: tasks, completed-tasks'"

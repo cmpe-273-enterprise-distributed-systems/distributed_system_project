@@ -91,7 +91,7 @@ def test_round_trip():
     try:
         resp = requests.post(
             f"{LEADER_URL}/ask",
-            json={"prompt": test_prompt, "user_id": "test-user-001", "user_name": "Test User"},
+            json={"prompt": test_prompt, "user_id": 1, "user_name": "Test User"},
             timeout=TIMEOUT,
         )
     except requests.Timeout:
