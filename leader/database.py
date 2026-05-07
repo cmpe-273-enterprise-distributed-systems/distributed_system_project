@@ -1,3 +1,6 @@
+# PROTOTYPE ONLY — SQLite implementation for initial development.
+# Final implementation will use Cassandra (NoSQL). Schema and query patterns
+# here do not represent the target data model.
 import hashlib
 import os
 import time
