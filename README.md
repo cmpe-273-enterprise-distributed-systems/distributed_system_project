@@ -109,6 +109,30 @@ Opens at **http://localhost:3000**
 
 ---
 
+## How to run the Database (Cassandra)
+
+**Requirements:** Docker and Python 3 installed.
+
+```bash
+cd web-app
+
+# 1. Setup Python virtual environment
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 2. Start Cassandra container
+make db-up
+
+# 3. Wait for Cassandra to boot and apply schemas
+make db-setup
+```
+
+To fully reset the database and wipe all data, run `make db-reset`.
+To open the database console, run `make db-shell`.
+
+---
+
 ## Logging in
 
 | Role | Email | Password |
