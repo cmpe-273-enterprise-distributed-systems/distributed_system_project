@@ -151,7 +151,7 @@ async def ask(body: AskBody):
 async def register_node(body: RegisterBody, request: Request):
     ip = request.client.host
     await registry.register(body.node_id, ip, body.ram_gb, body.model, body.skills)
-    return {"status": "registered", "assigned_queue": "tasks"}
+    return {"status": "registered", "assigned_queues": ["tasks-high-ram", "tasks-low-ram", "tasks-general"]}
 
 
 @app.post("/heartbeat")

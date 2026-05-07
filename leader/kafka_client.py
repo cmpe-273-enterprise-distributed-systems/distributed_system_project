@@ -1,7 +1,8 @@
 """
 Kafka integration for the leader node.
 
-TaskProducer  — publishes tasks to the 'tasks' topic.
+TaskProducer  — publishes tasks to the appropriate task topic based on prompt
+                analysis. Topics: tasks-high-ram, tasks-low-ram, tasks-general.
 ResultConsumer — runs a KafkaConsumer in a background thread, resolves
                  asyncio.Events when completed-task results arrive.
 
@@ -19,6 +20,36 @@ from typing import Any
 
 from kafka import KafkaConsumer, KafkaProducer
 
+TOPIC_HIGH_RAM = "tasks-high-ram"
+TOPIC_LOW_RAM = "tasks-low-ram"
+TOPIC_GENERAL = "tasks-general"
+
+# Keywords that suggest a prompt needs significant memory to process
+_HIGH_RAM_KEYWORDS = {
+    "analyze", "analyse", "summarize", "summarise", "generate", "write",
+    "code", "program", "refactor", "implement", "essay", "compare",
+    "explain in detail", "step by step", "in depth",
+}
+
+# Keywords that suggest a lightweight, factual query
+_LOW_RAM_KEYWORDS = {
+    "what is", "what are", "define", "who is", "when was", "how many",
+    "yes or no", "is it", "true or false", "list",
+}
+
+
+def _select_topic(prompt: str) -> str:
+    """
+    Mock dispatcher: picks a task topic based on simple keyword heuristics.
+    A real implementation would use token-count estimates or model metadata.
+    """
+    lowered = prompt.lower()
+    if any(kw in lowered for kw in _HIGH_RAM_KEYWORDS):
+        return TOPIC_HIGH_RAM
+    if any(kw in lowered for kw in _LOW_RAM_KEYWORDS):
+        return TOPIC_LOW_RAM
+    return TOPIC_GENERAL
+
 
 class TaskProducer:
     def __init__(self, bootstrap_servers: str):
@@ -27,15 +58,19 @@ class TaskProducer:
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         )
 
-    def publish(self, request_id: str, prompt: str, user_id: int, user_name: str):
-        self._producer.send("tasks", {
+    def publish(self, request_id: str, prompt: str, user_id: int, user_name: str) -> str:
+        """Publishes the task to the appropriate topic. Returns the chosen topic name."""
+        topic = _select_topic(prompt)
+        self._producer.send(topic, {
             "request_id": request_id,
             "prompt": prompt,
             "user_id": user_id,
             "user_name": user_name,
             "timestamp": int(time.time() * 1000),
+            "topic": topic,
         })
         self._producer.flush()
+        return topic
 
 
 class ResultConsumer:

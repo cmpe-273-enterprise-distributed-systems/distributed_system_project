@@ -120,7 +120,7 @@ def main():
     hb = threading.Thread(target=heartbeat_loop, daemon=True, name="heartbeat")
     hb.start()
 
-    kafka = WorkerKafka(KAFKA_BROKER, NODE_ID)
+    kafka = WorkerKafka(KAFKA_BROKER, NODE_ID, RAM_GB)
 
     def on_signal(sig, frame):
         print(f"\n[{NODE_ID}] Shutting down…")

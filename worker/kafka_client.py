@@ -2,6 +2,12 @@ import json
 
 from kafka import KafkaConsumer, KafkaProducer
 
+# Workers with at least this much RAM can handle high-RAM tasks.
+HIGH_RAM_THRESHOLD_GB = 12
+
+ALL_TASK_TOPICS = ("tasks-high-ram", "tasks-low-ram", "tasks-general")
+LOW_RAM_TOPICS = ("tasks-low-ram", "tasks-general")
+
 
 class WorkerKafka:
     """
@@ -10,15 +16,20 @@ class WorkerKafka:
     All workers share the consumer group 'workers', so Kafka distributes
     each task to exactly one worker — no duplicate processing.
 
+    Topic subscription is determined by the worker's available RAM:
+      - ram_gb >= HIGH_RAM_THRESHOLD_GB → subscribes to all three task topics
+      - ram_gb <  HIGH_RAM_THRESHOLD_GB → subscribes to tasks-low-ram and tasks-general only
+
     consumer_timeout_ms=1000 makes the consumer iterator exit after 1 s of
     silence, allowing the outer loop in worker.py to check the shutdown flag
     without blocking forever.
     """
 
-    def __init__(self, bootstrap_servers: str, node_id: str):
+    def __init__(self, bootstrap_servers: str, node_id: str, ram_gb: float):
         self._node_id = node_id
+        topics = ALL_TASK_TOPICS if ram_gb >= HIGH_RAM_THRESHOLD_GB else LOW_RAM_TOPICS
         self._consumer = KafkaConsumer(
-            "tasks",
+            *topics,
             bootstrap_servers=bootstrap_servers,
             group_id="workers",
             value_deserializer=lambda b: json.loads(b.decode("utf-8")),
