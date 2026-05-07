@@ -105,3 +105,76 @@ async def login(req: LoginRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+# ── Dummy endpoints for worker.py testing ──────────────
+# These will be replaced by Divya with real registry logic.
+
+class RegisterRequest(BaseModel):
+    node_id: str
+    ram_gb: float
+    models: list
+    skills: list
+
+class HeartbeatRequest(BaseModel):
+    node_id: str
+    status: str
+    tasks_completed: int
+
+@app.post("/register")
+async def register_node(req: RegisterRequest):
+    print(f"[REGISTER] {req.node_id} | RAM: {req.ram_gb}GB | Models: {req.models} | Skills: {req.skills}")
+    return {"status": "registered", "assigned_queue": f"worker_{req.node_id}"}
+
+@app.post("/heartbeat")
+async def heartbeat(req: HeartbeatRequest):
+    print(f"[HEARTBEAT] {req.node_id} | Status: {req.status} | Tasks: {req.tasks_completed}")
+    return {"status": "ok"}
+
+# ── Simple task queue (placeholder for Kafka) ──────────
+# This lets us test the full pipeline: user prompt → worker → Ollama → response
+
+from collections import deque
+
+task_queue = deque()       # pending tasks
+completed_tasks = {}       # task_id → response
+
+class AskRequest(BaseModel):
+    prompt: str
+    model: str = None      # optional: which model to use
+
+class TaskCompleteRequest(BaseModel):
+    task_id: str
+    node_id: str
+    response: str
+
+@app.post("/ask")
+async def ask(req: AskRequest):
+    """User sends a prompt. We queue it for the next available worker."""
+    task_id = f"task_{uuid.uuid4().hex[:8]}"
+    task_queue.append({"task_id": task_id, "prompt": req.prompt, "model": req.model})
+    print(f"[ASK] Queued task {task_id}: \"{req.prompt[:60]}\"")
+    return {"task_id": task_id, "status": "queued"}
+
+@app.get("/task/{node_id}")
+async def get_task(node_id: str):
+    """Worker polls this to pick up the next task."""
+    if task_queue:
+        task = task_queue.popleft()
+        print(f"[DISPATCH] Task {task['task_id']} → {node_id}")
+        return task
+    raise HTTPException(status_code=204, detail="No tasks available")
+
+@app.post("/task/complete")
+async def complete_task(req: TaskCompleteRequest):
+    """Worker reports back with the Ollama response."""
+    completed_tasks[req.task_id] = req.response
+    print(f"[COMPLETE] Task {req.task_id} from {req.node_id} — {len(req.response)} chars")
+    return {"status": "ok"}
+
+@app.get("/task/result/{task_id}")
+async def get_result(task_id: str):
+    """Check if a task has been completed and get the response."""
+    if task_id in completed_tasks:
+        return {"status": "completed", "response": completed_tasks[task_id]}
+    return {"status": "pending"}
+
