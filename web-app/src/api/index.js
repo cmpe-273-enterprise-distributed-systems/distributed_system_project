@@ -6,8 +6,8 @@
    backend is ready. The signatures stay the same.
 ───────────────────────────────────────────── */
 
-// import axios from 'axios';
-// const BASE = 'http://192.168.1.10:8000';
+import axios from 'axios';
+const BASE = 'http://localhost:8000';
 
 const delay = (ms = 650) => new Promise(r => setTimeout(r, ms));
 
@@ -44,23 +44,28 @@ let _nextReqId = 6;
 
 // Real: POST /auth/login  { email, password }
 export async function login(email, password) {
-  await delay();
-  if (email === ADMIN_USER.email && password === 'admin') return { ...ADMIN_USER };
-  const user = mockUsers.find(u => u.email === email && u.password === password);
-  if (!user) throw new Error('Invalid email or password.');
-  const { password: _, ...safe } = user;
-  return safe;
+  try {
+    const res = await axios.post(`${BASE}/auth/login`, { email, password });
+    return res.data;
+  } catch (err) {
+    if (err.response && err.response.data && err.response.data.detail) {
+      throw new Error(err.response.data.detail);
+    }
+    throw new Error('Failed to connect to the server.');
+  }
 }
 
 // Real: POST /auth/signup  { name, email, password, role }
 export async function signup(name, email, password, role) {
-  await delay();
-  if (email === ADMIN_USER.email || mockUsers.find(u => u.email === email))
-    throw new Error('An account with that email already exists.');
-  const newUser = { id: _nextUserId++, name, email, password, role, joinedAt: new Date().toISOString().slice(0, 10) };
-  mockUsers.push(newUser);
-  const { password: _, ...safe } = newUser;
-  return safe;
+  try {
+    const res = await axios.post(`${BASE}/auth/signup`, { name, email, password, role });
+    return res.data;
+  } catch (err) {
+    if (err.response && err.response.data && err.response.data.detail) {
+      throw new Error(err.response.data.detail);
+    }
+    throw new Error('Failed to connect to the server.');
+  }
 }
 
 /* ── Cluster stats ────────────────────────── */
