@@ -47,7 +47,7 @@ A distributed system where laptops pool compute over a VPN to run local AI model
 ---
 
 ## What's done ✅ / What's left 🔲
-
+<!--
 ### Frontend — `web-app/` ✅ DONE
 | Feature | Status |
 |---|---|
@@ -58,7 +58,7 @@ A distributed system where laptops pool compute over a VPN to run local AI model
 | Server node screen (register, heartbeat, activity log) | ✅ Done |
 | API layer (`src/api/index.js`) wired up with mock data | ✅ Done |
 | Auth context (user persisted to localStorage) | ✅ Done |
-| Connect to real backend (swap mocks in `api/index.js`) | 🔲 Waiting on backend
+| Connect to real backend (swap mocks in `api/index.js`) | 🔲 Waiting on backend -->
 
 ## Check the Project Completion Checklist in `project_completion_checklist.md` for more details.
 
