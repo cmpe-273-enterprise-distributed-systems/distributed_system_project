@@ -2,7 +2,7 @@
 Integration test: validates the full Kafka round-trip without a real worker or Ollama.
 
 Prerequisites:
-  1. docker-compose up -d           (starts Kafka + Zookeeper, creates topics)
+  1. docker-compose up -d           (starts Kafka, creates topics)
   2. cd leader && uvicorn main:app  (starts the leader on port 8000)
 
 Then run:
