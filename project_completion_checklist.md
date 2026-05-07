@@ -31,9 +31,9 @@ Here is the master checklist required to take this project from its current mock
 
 ## 6. 📨 Communication: Kafka Pipeline (Conlyn)
 - [ ] **Kafka Cluster / Broker Setup:** Install and configure Apache Kafka on laptops capable of being a Leader. *If a new Leader is elected, it must have a message broker ready to go.*
-- [ ] **Smart Dispatcher (Kafka Publisher):** Write the logic that receives a prompt, analyzes required specs, and places it in the correct Kafka topic (e.g., `tasks-high-ram`).
-- [ ] **Kafka Consumer:** Implement the listener on workers that constantly polls the Leader's Kafka broker for new tasks matching the worker's skills/RAM.
-- [ ] **Result Returner:** Script the logic to package the local Ollama output and push it back to the Leader's Kafka `completed-tasks` topic.
+- [x] **Smart Dispatcher (Kafka Publisher):** Write the logic that receives a prompt, analyzes required specs, and places it in the correct Kafka topic (e.g., `tasks-high-ram`).
+- [x] **Kafka Consumer:** Implement the listener on workers that constantly polls the Leader's Kafka broker for new tasks matching the worker's skills/RAM.
+- [x] **Result Returner:** Script the logic to package the local Ollama output and push it back to the Leader's Kafka `completed-tasks` topic.
 - [ ] **Response Router:** Build the logic that listens to completed tasks from workers and routes them back to the specific user's open connection.
 
 ## Observability 

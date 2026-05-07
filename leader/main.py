@@ -151,13 +151,17 @@ async def ask(body: AskBody):
 async def register_node(body: RegisterBody, request: Request):
     ip = request.client.host
     await registry.register(body.node_id, ip, body.ram_gb, body.model, body.skills)
-    return {"status": "registered", "assigned_queues": ["tasks-high-ram", "tasks-low-ram", "tasks-general"]}
+    return {
+        "status": "registered",
+        "kafka_broker": KAFKA_BROKER,
+        "assigned_queues": ["tasks-high-ram", "tasks-low-ram", "tasks-general"],
+    }
 
 
 @app.post("/heartbeat")
 async def heartbeat(body: HeartbeatBody):
     known = await registry.heartbeat(body.node_id, body.status, body.tasks_completed)
-    return {"status": "ok", "is_leader": False, "new_skill": None, "reregister": not known}
+    return {"status": "ok", "is_leader": False, "new_skill": None, "reregister": not known, "kafka_broker": KAFKA_BROKER}
 
 
 # ── Cluster stats ─────────────────────────────────────────────────────────────

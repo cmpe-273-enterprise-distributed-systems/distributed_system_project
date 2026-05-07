@@ -31,6 +31,12 @@ from ollama_client import generate
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
+# TODO(discovery): LEADER_URL is static — loaded once from .env and never updated.
+# If the current leader goes down and a new leader is elected at a different IP,
+# this worker will retry forever against a dead address. The fix requires a
+# Discovery Service (an external KV store, DNS record, or hosted endpoint) that
+# always holds the current leader's IP. On startup and after consecutive heartbeat
+# failures, this worker should query that service instead of reading a hardcoded URL.
 LEADER_URL = os.getenv("LEADER_URL", "http://localhost:8000")
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 MODEL = os.getenv("MODEL", "mistral")
@@ -48,8 +54,14 @@ _shutdown = threading.Event()
 
 # ── Registration ──────────────────────────────────────────────────────────────
 
-def register():
-    """Block until the leader accepts our registration."""
+def register() -> str:
+    """Block until the leader accepts registration. Returns the Kafka broker address.
+
+    TODO(discovery): This retries against the same LEADER_URL indefinitely. If the
+    leader is permanently gone, the retry loop will never succeed. Before each retry,
+    this function should query the Discovery Service for the current leader IP and
+    update LEADER_URL accordingly so it targets the newly elected leader.
+    """
     while not _shutdown.is_set():
         try:
             r = httpx.post(
@@ -58,16 +70,19 @@ def register():
                 timeout=5,
             )
             r.raise_for_status()
-            print(f"[{NODE_ID}] Registered with leader at {LEADER_URL}")
-            return
+            data = r.json()
+            broker = data.get("kafka_broker", KAFKA_BROKER)
+            print(f"[{NODE_ID}] Registered with leader at {LEADER_URL}. Kafka broker: {broker}")
+            return broker
         except Exception as e:
             print(f"[{NODE_ID}] Registration failed ({e}). Retrying in 5 s…")
             time.sleep(5)
+    return KAFKA_BROKER
 
 
 # ── Heartbeat loop ────────────────────────────────────────────────────────────
 
-def heartbeat_loop():
+def heartbeat_loop(kafka: WorkerKafka):
     global _current_status
     while not _shutdown.is_set():
         try:
@@ -79,9 +94,21 @@ def heartbeat_loop():
             data = r.json()
             if data.get("reregister"):
                 print(f"[{NODE_ID}] Leader asked us to re-register.")
-                register()
+                new_broker = register()
+                kafka.request_reconnect(new_broker)
+            elif (new_broker := data.get("kafka_broker")) and new_broker != kafka.bootstrap_servers:
+                print(f"[{NODE_ID}] Kafka broker changed to {new_broker}.")
+                kafka.request_reconnect(new_broker)
         except Exception as e:
             print(f"[{NODE_ID}] Heartbeat failed: {e}")
+            # TODO(discovery): A heartbeat failure may mean the leader is down, not
+            # just temporarily unreachable. After N consecutive failures, this worker
+            # should query the Discovery Service for the new leader IP, update
+            # LEADER_URL, call register() to join the new leader, and signal a Kafka
+            # broker reconnect via kafka.request_reconnect(). Until the Discovery
+            # Service exists, the worker will simply retry against the dead URL and
+            # stall — tasks already in Kafka partitions will still be processed, but
+            # no new tasks will be routable to this worker and heartbeats won't resume.
         time.sleep(HEARTBEAT_INTERVAL)
 
 
@@ -115,12 +142,12 @@ def process_task(kafka: WorkerKafka, task: dict):
 def main():
     print(f"[{NODE_ID}] Starting — RAM: {RAM_GB} GB  Model: {MODEL}  Skills: {SKILLS}")
 
-    register()
+    broker = register()
+    kafka = WorkerKafka(broker, NODE_ID, RAM_GB)
 
-    hb = threading.Thread(target=heartbeat_loop, daemon=True, name="heartbeat")
+    # Heartbeat thread needs the kafka reference so it can signal broker changes.
+    hb = threading.Thread(target=heartbeat_loop, args=(kafka,), daemon=True, name="heartbeat")
     hb.start()
-
-    kafka = WorkerKafka(KAFKA_BROKER, NODE_ID, RAM_GB)
 
     def on_signal(sig, frame):
         print(f"\n[{NODE_ID}] Shutting down…")
@@ -131,13 +158,14 @@ def main():
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    print(f"[{NODE_ID}] Listening for tasks on Kafka broker {KAFKA_BROKER}…")
+    print(f"[{NODE_ID}] Listening for tasks on Kafka broker {broker}…")
     while not _shutdown.is_set():
         try:
             for task in kafka.poll():
                 if _shutdown.is_set():
                     break
                 process_task(kafka, task)
+            kafka.apply_reconnect_if_needed()
         except Exception as e:
             print(f"[{NODE_ID}] Consumer error: {e}. Retrying in 2 s…")
             time.sleep(2)

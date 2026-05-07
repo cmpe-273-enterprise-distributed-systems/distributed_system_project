@@ -24,14 +24,18 @@ TOPIC_HIGH_RAM = "tasks-high-ram"
 TOPIC_LOW_RAM = "tasks-low-ram"
 TOPIC_GENERAL = "tasks-general"
 
-# Keywords that suggest a prompt needs significant memory to process
+# TODO(mock): These keyword sets are a placeholder for real dispatch logic.
+# A proper implementation should estimate token count, inspect required model
+# size/context window, or use request metadata set by the client. The current
+# keyword approach over-routes to tasks-high-ram (e.g. any prompt containing
+# "write" or "code") and has no fallback when no high-RAM worker is available.
 _HIGH_RAM_KEYWORDS = {
     "analyze", "analyse", "summarize", "summarise", "generate", "write",
     "code", "program", "refactor", "implement", "essay", "compare",
     "explain in detail", "step by step", "in depth",
 }
 
-# Keywords that suggest a lightweight, factual query
+# TODO(mock): Likewise, these low-RAM keywords are illustrative only.
 _LOW_RAM_KEYWORDS = {
     "what is", "what are", "define", "who is", "when was", "how many",
     "yes or no", "is it", "true or false", "list",
@@ -39,10 +43,8 @@ _LOW_RAM_KEYWORDS = {
 
 
 def _select_topic(prompt: str) -> str:
-    """
-    Mock dispatcher: picks a task topic based on simple keyword heuristics.
-    A real implementation would use token-count estimates or model metadata.
-    """
+    # TODO(mock): Replace with real routing logic — token-count estimate, model
+    # metadata, or an explicit tier field on the /ask request body.
     lowered = prompt.lower()
     if any(kw in lowered for kw in _HIGH_RAM_KEYWORDS):
         return TOPIC_HIGH_RAM
