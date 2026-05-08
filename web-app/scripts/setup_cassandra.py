@@ -1,11 +1,13 @@
-from cassandra.cluster import Cluster
 from pathlib import Path
 import time
 
 def connect():
+    from cassandra.cluster import Cluster
+    from cassandra.io.asyncioreactor import AsyncioConnection
+
     for attempt in range(40):
         try:
-            cluster = Cluster(["127.0.0.1"], port=9042)
+            cluster = Cluster(["127.0.0.1"], port=9042, connection_class=AsyncioConnection)
             session = cluster.connect()
             return cluster, session
         except Exception:

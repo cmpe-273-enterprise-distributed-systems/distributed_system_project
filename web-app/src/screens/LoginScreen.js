@@ -137,7 +137,7 @@ export default function LoginScreen() {
         }}>
           <strong style={{ color: 'var(--text-sub)' }}>Demo accounts</strong><br />
           Admin: <code style={codeStyle}>admin@cluster.local</code> / <code style={codeStyle}>admin</code><br />
-          User: <code style={codeStyle}>shan@example.com</code> / <code style={codeStyle}>password</code>
+          User: <code style={codeStyle}>user@cluster.local</code> / <code style={codeStyle}>password</code>
         </div>
       </div>
     </div>

@@ -1,9 +1,10 @@
 import uuid
 import time
+import subprocess
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from cassandra.cluster import Cluster
 
 app = FastAPI(title="Distributed AI Gateway - Leader Node")
 
@@ -19,21 +20,84 @@ app.add_middleware(
 # Connect to Cassandra
 cluster = None
 session = None
+db_last_error = None
+DB_CQLSH_CONTAINER = "web-app-cassandra"
+
+
+def _cqlsh(query: str) -> str:
+    """
+    Execute a CQL query using cqlsh inside the Cassandra container.
+    This avoids relying on the Python cassandra-driver (which is not compatible
+    with Python 3.12+ in some environments).
+    """
+    try:
+        # -e executes statement and exits.
+        res = subprocess.run(
+            ["docker", "exec", DB_CQLSH_CONTAINER, "cqlsh", "-e", query],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        return res.stdout
+    except Exception as e:
+        raise RuntimeError(f"cqlsh failed: {e}") from e
+
+
+def _cql_string_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _parse_cqlsh_table_first_row(stdout: str):
+    """
+    Parse the first data row from cqlsh's default table output.
+    This is a lightweight parser intended for simple SELECTs that return 0/1 rows.
+    """
+    lines = [ln.rstrip("\r") for ln in stdout.splitlines() if ln.strip()]
+    # Typical format:
+    #  col1 | col2
+    # ------+------
+    #  v1   | v2
+    # (1 rows)
+    data_rows = []
+    for ln in lines:
+        if ln.startswith("(") and ln.endswith("rows)"):
+            break
+        if "|" in ln and not set(ln.strip()).issubset(set("-+")):
+            data_rows.append(ln)
+    if len(data_rows) < 2:
+        return None
+    header = [h.strip() for h in data_rows[0].split("|")]
+    row = [c.strip() for c in data_rows[1].split("|")]
+    if len(row) != len(header):
+        return None
+    return dict(zip(header, row))
 
 @app.on_event("startup")
 def startup_event():
-    global cluster, session
+    global cluster, session, db_last_error
     print("Connecting to Cassandra...")
     for attempt in range(10):
         try:
-            cluster = Cluster(["127.0.0.1"], port=9042)
-            session = cluster.connect('web_app')
-            print("Successfully connected to Cassandra keyspace 'web_app'")
+            # Use cqlsh via docker exec as the "session".
+            _cqlsh("DESCRIBE KEYSPACES;")
+            session = True
+            db_last_error = None
+            print("Successfully connected to Cassandra via cqlsh")
             return
         except Exception as e:
+            db_last_error = repr(e)
             print(f"Waiting for Cassandra (attempt {attempt + 1}/10)...")
             time.sleep(2)
     print("WARNING: Could not connect to Cassandra on startup.")
+
+
+@app.get("/db/health")
+async def db_health():
+    return {
+        "connected": bool(session),
+        "last_error": db_last_error,
+    }
 
 @app.on_event("shutdown")
 def shutdown_event():
@@ -56,20 +120,21 @@ async def signup(req: SignupRequest):
         raise HTTPException(status_code=500, detail="Database not connected")
     
     # Check if user already exists
-    query = "SELECT email FROM users WHERE email = %s"
-    existing = session.execute(query, (req.email,)).one()
+    q = f"SELECT email FROM web_app.users WHERE email = {_cql_string_literal(req.email)};"
+    existing = _parse_cqlsh_table_first_row(_cqlsh(q))
     
     if existing:
         raise HTTPException(status_code=400, detail="An account with that email already exists.")
     
     user_id = uuid.uuid4()
     
-    insert_query = """
-        INSERT INTO users (user_id, username, email, password_hash, role, created_at)
-        VALUES (%s, %s, %s, %s, %s, toTimestamp(now()))
-    """
     try:
-        session.execute(insert_query, (user_id, req.name, req.email, req.password, req.role))
+        insert_q = (
+            "INSERT INTO web_app.users (user_id, username, email, password_hash, role, created_at) "
+            f"VALUES ({user_id}, {_cql_string_literal(req.name)}, {_cql_string_literal(req.email)}, "
+            f"{_cql_string_literal(req.password)}, {_cql_string_literal(req.role)}, toTimestamp(now()));"
+        )
+        _cqlsh(insert_q)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
         
@@ -86,25 +151,32 @@ async def login(req: LoginRequest):
         raise HTTPException(status_code=500, detail="Database not connected")
         
     # Real app would check password hash, this uses plain text for now
-    query = "SELECT user_id, username, email, password_hash, role FROM users WHERE email = %s"
-    user = session.execute(query, (req.email,)).one()
+    q = (
+        "SELECT user_id, username, email, password_hash, role "
+        f"FROM web_app.users WHERE email = {_cql_string_literal(req.email)};"
+    )
+    user = _parse_cqlsh_table_first_row(_cqlsh(q))
     
     if not user:
         raise HTTPException(status_code=400, detail="Invalid email or password.")
         
-    if user.password_hash != req.password:
+    if user.get("password_hash") != req.password:
         raise HTTPException(status_code=400, detail="Invalid email or password.")
         
     return {
-        "id": str(user.user_id),
-        "name": user.username,
-        "email": user.email,
-        "role": user.role
+        "id": str(user.get("user_id")),
+        "name": user.get("username"),
+        "email": user.get("email"),
+        "role": user.get("role"),
     }
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/debug/source")
+async def debug_source():
+    return {"file": __file__}
 
 # ── Dummy endpoints for worker.py testing ──────────────
 # These will be replaced by Divya with real registry logic.
