@@ -141,9 +141,13 @@ export async function sendHeartbeat(nodeData) {
 
 // Real: GET /health
 export async function healthCheck() {
-  await delay(500);
-  // throw new Error('offline'); // ← uncomment to simulate offline
-  return { status: 'ok' };
+  try {
+    const res = await axios.get(`${BASE}/health`, { timeout: 5000 });
+    return res.data;
+  } catch (err) {
+    // ChatScreen uses .catch() to flip the UI to "offline"
+    throw new Error('Leader health check failed.');
+  }
 }
 
 // Real: POST /ask  { prompt }
