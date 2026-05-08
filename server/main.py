@@ -2,9 +2,28 @@ import uuid
 import time
 import subprocess
 import json
+import asyncio
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from cluster_state import (
+    load_cluster_state,
+    save_cluster_state,
+    create_cluster,
+    generate_join_code,
+    validate_join_token,
+    add_or_update_node,
+    update_heartbeat,
+    mark_dead_nodes,
+    elect_leader,
+    get_leader,
+    get_cluster_status,
+    merge_cluster_state,
+)
+from node_config import load_or_create_node_config
+from tailscale_utils import get_advertise_host
 
 app = FastAPI(title="Distributed AI Gateway - Leader Node")
 
@@ -22,6 +41,9 @@ cluster = None
 session = None
 db_last_error = None
 DB_CQLSH_CONTAINER = "web-app-cassandra"
+
+_cluster = load_cluster_state()
+_last_logged_leader_id: Optional[str] = None
 
 
 def _cqlsh(query: str) -> str:
@@ -90,6 +112,36 @@ def startup_event():
             print(f"Waiting for Cassandra (attempt {attempt + 1}/10)...")
             time.sleep(2)
     print("WARNING: Could not connect to Cassandra on startup.")
+
+
+@app.on_event("startup")
+async def cluster_startup_tasks():
+    """
+    Background reconciliation loop:
+    - mark nodes dead if heartbeat older than 15 seconds
+    - recompute leader
+    - persist cluster state
+    """
+    global _last_logged_leader_id
+    # Ensure state is loaded from disk on boot.
+    load_cluster_state()
+
+    async def loop():
+        global _last_logged_leader_id
+        while True:
+            try:
+                mark_dead_nodes(timeout_seconds=15)
+                leader = elect_leader(timeout_seconds=15)
+                leader_id = leader.get("node_id") if leader else None
+                if leader_id != _last_logged_leader_id:
+                    print(f"[LEADER] now={leader_id}")
+                    _last_logged_leader_id = leader_id
+                save_cluster_state()
+            except Exception as e:
+                print(f"[CLUSTER] reconcile error: {e}")
+            await asyncio.sleep(5)
+
+    asyncio.create_task(loop())
 
 
 @app.get("/db/health")
@@ -178,6 +230,140 @@ async def health():
 async def debug_source():
     return {"file": __file__}
 
+
+# ─────────────────────────────────────────────
+# Cluster bootstrap + discovery API
+# ─────────────────────────────────────────────
+
+class NodeInfo(BaseModel):
+    node_id: str
+    role: str = "worker"  # client | worker | gateway | both
+    priority: int = 10
+    host: str
+    port: int = 8000
+    url: str
+    ram_gb: Optional[float] = None
+    models: List[str] = []
+    skills: List[str] = []
+    status: str = "alive"
+    last_heartbeat: int = 0
+    tasks_completed: int = 0
+
+
+class ClusterCreateRequest(BaseModel):
+    role: str = "both"
+    priority: int = 100
+    port: int = 8000
+
+
+class JoinCode(BaseModel):
+    cluster_id: str
+    seed_nodes: List[str]
+    join_token: str
+    expires_at: int
+    message: Optional[str] = None
+
+
+class JoinClusterRequest(BaseModel):
+    cluster_id: str
+    join_token: str
+    node: NodeInfo
+
+
+class SyncRequest(BaseModel):
+    cluster_id: str
+    known_nodes: List[Dict[str, Any]] = []
+    current_leader: Optional[Dict[str, Any]] = None
+
+
+@app.post("/cluster/create")
+async def cluster_create(req: ClusterCreateRequest):
+    cfg = load_or_create_node_config(role=req.role, priority=req.priority, port=req.port)
+    host = get_advertise_host()
+    port = int(cfg.get("port") or req.port)
+    node = {
+        "node_id": cfg["node_id"],
+        "role": cfg.get("role") or req.role,
+        "priority": int(cfg.get("priority") or req.priority),
+        "host": host,
+        "port": port,
+        "url": f"http://{host}:{port}",
+        "status": "alive",
+        "last_heartbeat": int(time.time()),
+        "tasks_completed": 0,
+        "ram_gb": None,
+        "models": [],
+        "skills": [],
+    }
+
+    create_cluster(node)
+    join_code = generate_join_code()
+    return {
+        "status": "created",
+        "cluster_id": load_cluster_state().cluster_id,
+        "join_code": {
+            **join_code,
+            "cluster_id": load_cluster_state().cluster_id,
+            "seed_nodes": join_code.get("seed_nodes") or [node["url"]],
+        },
+    }
+
+
+@app.post("/cluster/join")
+async def cluster_join(req: JoinClusterRequest):
+    st = load_cluster_state()
+    if st.cluster_id and req.cluster_id != st.cluster_id:
+        raise HTTPException(status_code=400, detail="Cluster ID mismatch")
+    if not validate_join_token(req.join_token):
+        raise HTTPException(status_code=401, detail="Invalid or expired join token")
+
+    add_or_update_node(req.node.model_dump())
+    elect_leader()
+    save_cluster_state()
+    status = get_cluster_status()
+    return {
+        "status": "joined",
+        "cluster_id": status.get("cluster_id"),
+        "current_leader": status.get("current_leader"),
+        "known_nodes": status.get("known_nodes"),
+        "heartbeat_interval_seconds": 5,
+    }
+
+
+@app.post("/cluster/sync")
+async def cluster_sync(req: SyncRequest):
+    st = load_cluster_state()
+    if st.cluster_id and req.cluster_id != st.cluster_id:
+        raise HTTPException(status_code=400, detail="Cluster ID mismatch")
+    merge_cluster_state(req.model_dump())
+    return get_cluster_status()
+
+
+@app.get("/cluster/status")
+async def cluster_status():
+    return get_cluster_status()
+
+
+@app.get("/leader")
+async def leader():
+    elect_leader()
+    leader = get_leader()
+    if not leader:
+        raise HTTPException(status_code=404, detail="No leader known")
+    return leader
+
+
+@app.get("/.well-known/ai-gateway")
+async def well_known():
+    st = load_cluster_state()
+    cfg = load_or_create_node_config()
+    return {
+        "service": "distributed-ai-gateway",
+        "cluster_id": st.cluster_id,
+        "node_id": cfg.get("node_id"),
+        "join_supported": True,
+    }
+
 # ── Dummy endpoints for worker.py testing ──────────────
 # These will be replaced by Divya with real registry logic.
 
@@ -186,6 +372,10 @@ class RegisterRequest(BaseModel):
     ram_gb: float
     models: list
     skills: list
+    role: Optional[str] = None
+    priority: Optional[int] = None
+    host: Optional[str] = None
+    port: Optional[int] = None
 
 class HeartbeatRequest(BaseModel):
     node_id: str
@@ -194,13 +384,38 @@ class HeartbeatRequest(BaseModel):
 
 @app.post("/register")
 async def register_node(req: RegisterRequest):
-    print(f"[REGISTER] {req.node_id} | RAM: {req.ram_gb}GB | Models: {req.models} | Skills: {req.skills}")
-    return {"status": "registered", "assigned_queue": f"worker_{req.node_id}"}
+    host = req.host or get_advertise_host()
+    port = int(req.port or 8000)
+    role = (req.role or "worker").lower()
+    priority = int(req.priority or (10 if role == "worker" else 100))
+    node = {
+        "node_id": req.node_id,
+        "role": role,
+        "priority": priority,
+        "host": host,
+        "port": port,
+        "url": f"http://{host}:{port}",
+        "ram_gb": req.ram_gb,
+        "models": req.models or [],
+        "skills": req.skills or [],
+        "status": "alive",
+        "last_heartbeat": int(time.time()),
+        "tasks_completed": 0,
+    }
+    add_or_update_node(node)
+    elect_leader()
+    save_cluster_state()
+    leader = get_leader()
+    print(f"[REGISTER] {req.node_id} | role={role} | leader={leader.get('node_id') if leader else None}")
+    return {"status": "registered", "assigned_queue": f"worker_{req.node_id}", "current_leader": leader}
 
 @app.post("/heartbeat")
 async def heartbeat(req: HeartbeatRequest):
-    print(f"[HEARTBEAT] {req.node_id} | Status: {req.status} | Tasks: {req.tasks_completed}")
-    return {"status": "ok"}
+    update_heartbeat(req.node_id, req.status, req.tasks_completed)
+    elect_leader()
+    save_cluster_state()
+    leader = get_leader()
+    return {"status": "ok", "current_leader": leader}
 
 # ── Simple task queue (placeholder for Kafka) ──────────
 # This lets us test the full pipeline: user prompt → worker → Ollama → response

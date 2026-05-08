@@ -17,9 +17,16 @@ The backend for **Distributed AI Gateway** is split into two Python programs:
   - Note: passwords are currently stored/compared as plain text in the `password_hash` column (no JWT yet)
 - **Health**
   - `GET /health` → `{ "status": "ok" }`
-- **Worker integration (currently just logging)**
-  - `POST /register`
-  - `POST /heartbeat`
+- **Cluster bootstrap + membership (demo)**
+  - `POST /cluster/create` → create cluster + print join code (via `node_cli.py`)
+  - `POST /cluster/join` → join using join code (seed URLs + temporary token)
+  - `POST /cluster/sync` → merge membership from another node
+  - `GET  /cluster/status` → see nodes + leader
+  - `GET  /leader` → current leader
+  - `GET  /.well-known/ai-gateway` → discovery metadata
+- **Worker integration (stores membership now)**
+  - `POST /register` → adds/updates node profile in local cluster state
+  - `POST /heartbeat` → updates heartbeats and recomputes leader
 - **Demo task pipeline (in-memory queue; placeholder for Kafka)**
   - `POST /ask` queues a task
   - `GET /task/{node_id}` worker polls for next task
@@ -103,6 +110,49 @@ py worker.py --leader-ip 127.0.0.1
 
 ---
 
+## Bootstrap demo flow (join code)
+
+This is a simple demo-friendly way to avoid hardcoding the leader IP. The **join code is only for first contact**.
+
+### Laptop A (create cluster)
+1. Start FastAPI:
+
+```powershell
+cd server
+py -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+2. Create cluster + print join code:
+
+```powershell
+cd server
+python node_cli.py create-cluster
+```
+
+3. Copy the printed join code JSON.
+
+### Laptop B (join as worker)
+Start worker using the join code:
+
+```powershell
+cd server
+python worker.py --join-code '<paste join code JSON>'
+```
+
+Expected behavior:
+- Laptop B contacts Laptop A using the seed URL from the join code.
+- Laptop B joins and receives the **current leader URL** and **known nodes**.
+- Laptop B registers and starts heartbeats.
+- Laptop A’s `GET /cluster/status` shows Laptop B as **alive**.
+
+Failure demo (leader changes):
+- Stop Laptop A after B and C have joined.
+- Remaining nodes mark A **dead** after ~15 seconds.
+- Highest-priority alive `gateway`/`both` node becomes leader.
+- Workers query `GET /leader` on known nodes and switch leaders automatically.
+
+---
+
 ## API reference (current)
 
 ### Auth (Cassandra-backed)
@@ -120,6 +170,14 @@ py worker.py --leader-ip 127.0.0.1
 
 ### Health
 - `GET /health`
+
+### Cluster bootstrap (demo)
+- `POST /cluster/create`
+- `POST /cluster/join`
+- `POST /cluster/sync`
+- `GET  /cluster/status`
+- `GET  /leader`
+- `GET  /.well-known/ai-gateway`
 
 ### Worker ↔ Leader (currently logs only)
 - `POST /register`

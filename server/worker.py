@@ -16,9 +16,12 @@ import glob
 import os
 import time
 import uuid
+import json
 
 import psutil
 import requests
+
+from tailscale_utils import get_advertise_host
 
 # ── Config ────────────────────────────────────────────
 
@@ -133,6 +136,8 @@ def heartbeat_loop(leader_url, profile):
     """Send heartbeats and poll the Leader for tasks."""
     tasks_completed = 0
     status = "idle"
+    known_nodes = profile.get("_known_nodes", [])
+    consecutive_leader_failures = 0
 
     print(f"[♥] Starting heartbeat + task polling loop (every {HEARTBEAT_INTERVAL}s)...\n")
 
@@ -147,10 +152,21 @@ def heartbeat_loop(leader_url, profile):
             resp = requests.post(f"{leader_url}/heartbeat", json=payload, timeout=5)
             resp.raise_for_status()
             print(f"[♥] Heartbeat sent — status: {status} | tasks done: {tasks_completed}")
+            consecutive_leader_failures = 0
         except requests.ConnectionError:
             print(f"[!] Heartbeat FAILED — Leader unreachable at {leader_url}")
+            consecutive_leader_failures += 1
         except Exception as e:
             print(f"[!] Heartbeat error: {e}")
+            consecutive_leader_failures += 1
+
+        # If leader is failing repeatedly, try to discover a new leader from known nodes.
+        if consecutive_leader_failures >= 3 and known_nodes:
+            new_leader = discover_leader_from_known_nodes(known_nodes)
+            if new_leader and new_leader != leader_url:
+                print(f"[↪] Switching leader: {leader_url} → {new_leader}")
+                leader_url = new_leader
+                consecutive_leader_failures = 0
 
         # Poll for a task
         try:
@@ -185,15 +201,93 @@ def heartbeat_loop(leader_url, profile):
 
 # ── Main ──────────────────────────────────────────────
 
+def join_cluster(join_code: dict, profile: dict) -> tuple[str, list]:
+    """
+    Join the cluster using a join code (seed urls + join token).
+    Returns (leader_url, known_nodes).
+    """
+    seed_nodes = join_code.get("seed_nodes") or []
+    cluster_id = join_code.get("cluster_id")
+    join_token = join_code.get("join_token")
+    if not seed_nodes or not cluster_id or not join_token:
+        raise ValueError("Invalid join code JSON (missing seed_nodes / cluster_id / join_token)")
+
+    # Build NodeInfo-like payload
+    host = get_advertise_host()
+    node = {
+        "node_id": profile["node_id"],
+        "role": "worker",
+        "priority": 10,
+        "host": host,
+        "port": LEADER_PORT,
+        "url": f"http://{host}:{LEADER_PORT}",
+        "ram_gb": profile.get("ram_gb"),
+        "models": profile.get("models", []),
+        "skills": profile.get("skills", []),
+        "status": "alive",
+        "last_heartbeat": int(time.time()),
+        "tasks_completed": 0,
+    }
+
+    for seed in seed_nodes:
+        try:
+            resp = requests.post(
+                f"{seed}/cluster/join",
+                json={"cluster_id": cluster_id, "join_token": join_token, "node": node},
+                timeout=5,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            leader = data.get("current_leader") or {}
+            leader_url = leader.get("url") or seed
+            known = data.get("known_nodes") or []
+            return leader_url, known
+        except Exception:
+            continue
+    raise RuntimeError("Could not join cluster: no reachable seed nodes")
+
+
+def discover_leader_from_known_nodes(known_nodes: list) -> str | None:
+    """
+    Query /leader from known gateway/both nodes and return the leader url if found.
+    """
+    for n in known_nodes:
+        url = None
+        if isinstance(n, dict):
+            url = n.get("url")
+        if not url:
+            continue
+        try:
+            r = requests.get(f"{url}/leader", timeout=3)
+            if r.status_code == 200:
+                leader = r.json()
+                return leader.get("url") or url
+        except Exception:
+            pass
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Worker node for the Distributed AI Gateway")
     parser.add_argument("--leader-ip", default="127.0.0.1", help="Leader node IP address (default: 127.0.0.1)")
+    parser.add_argument("--join-code", default=None, help="Join code JSON (paste from node_cli.py create-cluster)")
     args = parser.parse_args()
-
-    leader_url = f"http://{args.leader_ip}:{LEADER_PORT}"
 
     # Step 1: Profile this machine
     profile = get_profile()
+    profile["role"] = "worker"
+    profile["priority"] = 10
+    profile["host"] = get_advertise_host()
+    profile["port"] = LEADER_PORT
+
+    if args.join_code:
+        join_code = json.loads(args.join_code)
+        leader_url, known_nodes = join_cluster(join_code, profile)
+        profile["_known_nodes"] = known_nodes
+        print(f"[✓] Joined cluster {join_code.get('cluster_id')} | leader={leader_url}")
+    else:
+        # Backward compatible path
+        leader_url = f"http://{args.leader_ip}:{LEADER_PORT}"
 
     # Step 2: Register with the Leader (retry until successful)
     print(f"Connecting to Leader at {leader_url}...")
