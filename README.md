@@ -47,7 +47,7 @@ A distributed system where laptops pool compute over a VPN to run local AI model
 ---
 
 ## What's done ✅ / What's left 🔲
-
+<!--
 ### Frontend — `web-app/` ✅ DONE
 | Feature | Status |
 |---|---|
@@ -58,7 +58,7 @@ A distributed system where laptops pool compute over a VPN to run local AI model
 | Server node screen (register, heartbeat, activity log) | ✅ Done |
 | API layer (`src/api/index.js`) wired up with mock data | ✅ Done |
 | Auth context (user persisted to localStorage) | ✅ Done |
-| Connect to real backend (swap mocks in `api/index.js`) | 🔲 Waiting on backend
+| Connect to real backend (swap mocks in `api/index.js`) | 🔲 Waiting on backend -->
 
 ## Check the Project Completion Checklist in `project_completion_checklist.md` for more details.
 
@@ -85,25 +85,49 @@ A distributed system where laptops pool compute over a VPN to run local AI model
 
 ---
 
-## How to run the frontend
+## How to Run the Full Pipeline Locally
 
-**Requirements:** Node.js installed
+To run the complete system (React -> FastAPI -> Cassandra), you will need to open **three separate terminal windows**.
 
+### 1. The Database (Terminal 1)
+**Requirements:** Docker and Python 3 installed.
 ```bash
-# 1. Go into the frontend folder
 cd web-app
 
-# 2. Install dependencies (only needed once after cloning)
+# Start the container
+make db-up
+
+# Wait for boot and apply schemas
+make db-setup
+```
+*(To reset the database, run `make db-reset`. To view data, run `make db-shell`)*
+
+### 2. The FastAPI Backend (Terminal 2)
+```bash
+cd server
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+python3 -m uvicorn main:app --reload
+```
+
+### 3. The React Frontend (Terminal 3)
+**Requirements:** Node.js installed
+```bash
+cd web-app
+
+# Install dependencies (only needed once)
 npm install
 
-#3. Create .env file
+# Create .env file (only needed once)
 cp .env.example .env
 
-# 4. Start the dev server
+# Start the dev server
 npm start
 ```
 
-Opens at **http://localhost:3000**
+Opens automatically at **http://localhost:3000**
 
 > `node_modules/` is gitignored — always run `npm install` after pulling from GitHub.
 

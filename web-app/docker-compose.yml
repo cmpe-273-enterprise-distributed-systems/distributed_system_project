@@ -1,0 +1,13 @@
+services:
+  cassandra:
+    image: cassandra:5
+    container_name: web-app-cassandra
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: web-app-dev
+
+volumes:
+  cassandra_data:

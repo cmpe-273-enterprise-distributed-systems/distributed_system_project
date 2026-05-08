@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+cassandra-driver
+pydantic
+psutil
+requests
