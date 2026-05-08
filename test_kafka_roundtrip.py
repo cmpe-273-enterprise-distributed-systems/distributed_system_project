@@ -2,8 +2,9 @@
 Integration test: validates the full Kafka round-trip without a real worker or Ollama.
 
 Prerequisites:
-  1. docker-compose up -d           (starts Kafka, creates topics)
-  2. cd leader && uvicorn main:app  (starts the leader on port 8000)
+  1. docker-compose up -d                          (starts Kafka + Cassandra, creates topics)
+  2. cd web-app && python scripts/setup_cassandra.py  (initialise keyspace + tables)
+  3. cd leader && cp .env.example .env && uvicorn main:app  (starts the leader on port 8000)
 
 Then run:
   python test_kafka_roundtrip.py
@@ -103,7 +104,7 @@ def test_round_trip(prompt: str, expected_topic: str):
     try:
         resp = requests.post(
             f"{LEADER_URL}/ask",
-            json={"prompt": prompt, "user_id": 1, "user_name": "Test User"},
+            json={"prompt": prompt, "user_id": "", "user_name": "Test User"},
             timeout=TIMEOUT,
         )
     except requests.Timeout:
