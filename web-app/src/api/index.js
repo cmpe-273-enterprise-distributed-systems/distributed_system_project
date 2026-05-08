@@ -7,7 +7,7 @@
 ───────────────────────────────────────────── */
 
 import axios from 'axios';
-const BASE = 'http://localhost:8002';
+const BASE = 'http://localhost:8000';
 
 const delay = (ms = 650) => new Promise(r => setTimeout(r, ms));
 

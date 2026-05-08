@@ -1,7 +1,9 @@
 import asyncio
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -10,6 +12,19 @@ from pydantic import BaseModel
 
 load_dotenv()
 
+from cluster_state import (
+    add_or_update_node,
+    create_cluster,
+    elect_leader,
+    generate_join_code,
+    get_cluster_status,
+    get_leader,
+    load_cluster_state,
+    merge_cluster_state,
+    save_cluster_state,
+    update_heartbeat,
+    validate_join_token,
+)
 from database import (
     _hash,
     create_user,
@@ -22,7 +37,9 @@ from database import (
     update_user_role,
 )
 from kafka_client import ResultConsumer, TaskProducer
+from node_config import load_or_create_node_config
 from registry import Registry
+from tailscale_utils import get_advertise_host
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 TASK_TIMEOUT = int(os.getenv("TASK_TIMEOUT", "60"))
@@ -80,6 +97,35 @@ class HeartbeatBody(BaseModel):
 
 class UpdateRoleBody(BaseModel):
     role: str
+
+class ClusterCreateRequest(BaseModel):
+    role: str = "both"
+    priority: int = 100
+    port: int = 8000
+
+class NodeInfo(BaseModel):
+    node_id: str
+    role: str = "worker"
+    priority: int = 10
+    host: str
+    port: int = 8000
+    url: str
+    ram_gb: Optional[float] = None
+    models: List[str] = []
+    skills: List[str] = []
+    status: str = "alive"
+    last_heartbeat: int = 0
+    tasks_completed: int = 0
+
+class JoinClusterRequest(BaseModel):
+    cluster_id: str
+    join_token: str
+    node: NodeInfo
+
+class SyncRequest(BaseModel):
+    cluster_id: str
+    known_nodes: List[Dict[str, Any]] = []
+    current_leader: Optional[Dict[str, Any]] = None
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -152,6 +198,23 @@ async def ask(body: AskBody):
 async def register_node(body: RegisterBody, request: Request):
     ip = request.client.host
     await registry.register(body.node_id, ip, body.ram_gb, body.model, body.skills)
+    node = {
+        "node_id": body.node_id,
+        "role": "worker",
+        "priority": 10,
+        "host": ip,
+        "port": 8000,
+        "url": f"http://{ip}:8000",
+        "ram_gb": body.ram_gb,
+        "models": [body.model],
+        "skills": body.skills,
+        "status": "alive",
+        "last_heartbeat": int(time.time()),
+        "tasks_completed": 0,
+    }
+    add_or_update_node(node)
+    elect_leader()
+    save_cluster_state()
     return {
         "status": "registered",
         "kafka_broker": KAFKA_BROKER,
@@ -162,7 +225,100 @@ async def register_node(body: RegisterBody, request: Request):
 @app.post("/heartbeat")
 async def heartbeat(body: HeartbeatBody):
     known = await registry.heartbeat(body.node_id, body.status, body.tasks_completed)
+    update_heartbeat(body.node_id, body.status, body.tasks_completed)
+    elect_leader()
+    save_cluster_state()
     return {"status": "ok", "is_leader": False, "new_skill": None, "reregister": not known, "kafka_broker": KAFKA_BROKER}
+
+
+# ── Cluster bootstrap & membership ───────────────────────────────────────────
+
+@app.post("/cluster/create")
+async def cluster_create(req: ClusterCreateRequest):
+    cfg = load_or_create_node_config(role=req.role, priority=req.priority, port=req.port)
+    host = get_advertise_host()
+    port = int(cfg.get("port") or req.port)
+    node = {
+        "node_id": cfg["node_id"],
+        "role": cfg.get("role") or req.role,
+        "priority": int(cfg.get("priority") or req.priority),
+        "host": host,
+        "port": port,
+        "url": f"http://{host}:{port}",
+        "status": "alive",
+        "last_heartbeat": int(time.time()),
+        "tasks_completed": 0,
+        "ram_gb": None,
+        "models": [],
+        "skills": [],
+    }
+    create_cluster(node)
+    join_code = generate_join_code()
+    st = load_cluster_state()
+    return {
+        "status": "created",
+        "cluster_id": st.cluster_id,
+        "join_code": {
+            **join_code,
+            "cluster_id": st.cluster_id,
+            "seed_nodes": join_code.get("seed_nodes") or [node["url"]],
+        },
+    }
+
+
+@app.post("/cluster/join")
+async def cluster_join(req: JoinClusterRequest):
+    st = load_cluster_state()
+    if st.cluster_id and req.cluster_id != st.cluster_id:
+        raise HTTPException(400, "Cluster ID mismatch")
+    if not validate_join_token(req.join_token):
+        raise HTTPException(401, "Invalid or expired join token")
+    add_or_update_node(req.node.model_dump())
+    elect_leader()
+    save_cluster_state()
+    status = get_cluster_status()
+    return {
+        "status": "joined",
+        "cluster_id": status.get("cluster_id"),
+        "current_leader": status.get("current_leader"),
+        "known_nodes": status.get("known_nodes"),
+        "heartbeat_interval_seconds": 5,
+    }
+
+
+@app.post("/cluster/sync")
+async def cluster_sync(req: SyncRequest):
+    st = load_cluster_state()
+    if st.cluster_id and req.cluster_id != st.cluster_id:
+        raise HTTPException(400, "Cluster ID mismatch")
+    merge_cluster_state(req.model_dump())
+    return get_cluster_status()
+
+
+@app.get("/cluster/status")
+async def cluster_status():
+    return get_cluster_status()
+
+
+@app.get("/leader")
+async def leader_info():
+    elect_leader()
+    leader = get_leader()
+    if not leader:
+        raise HTTPException(404, "No leader known")
+    return leader
+
+
+@app.get("/.well-known/ai-gateway")
+async def well_known():
+    st = load_cluster_state()
+    cfg = load_or_create_node_config()
+    return {
+        "service": "distributed-ai-gateway",
+        "cluster_id": st.cluster_id,
+        "node_id": cfg.get("node_id"),
+        "join_supported": True,
+    }
 
 
 # ── Cluster stats ─────────────────────────────────────────────────────────────
