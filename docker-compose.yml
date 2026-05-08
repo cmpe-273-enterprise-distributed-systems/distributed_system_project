@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka
+    container_name: kafka-broker
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft: this node acts as both broker and controller
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      # Fixed cluster ID — must be a base64url-encoded 16-byte UUID.
+      # Regenerate with: docker run --rm confluentinc/cp-kafka:7.5.0 kafka-storage random-uuid
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Three listeners: CONTROLLER (KRaft), INSIDE (container-to-container), OUTSIDE (external clients)
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+      KAFKA_LISTENERS: CONTROLLER://kafka:9093,INSIDE://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:29092,OUTSIDE://${LEADER_IP:-localhost}:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init
+    depends_on:
+      - kafka
+    entrypoint: []
+    command:
+      - /bin/sh
+      - -c
+      - "until kafka-topics --bootstrap-server kafka:29092 --list > /dev/null 2>&1; do echo 'Waiting for Kafka...'; sleep 2; done && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic tasks-high-ram --partitions 4 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic tasks-low-ram --partitions 4 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic tasks-general --partitions 4 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic completed-tasks --partitions 4 --replication-factor 1 && echo 'Topics created: tasks-high-ram, tasks-low-ram, tasks-general, completed-tasks'"
+
+  cassandra:
+    image: cassandra:5
+    container_name: web-app-cassandra
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: web-app-dev
+
+volumes:
+  cassandra_data:
