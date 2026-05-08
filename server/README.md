@@ -1,14 +1,46 @@
-# Worker Node (`worker.py`)
+# Backend (`server/`)
 
-A standalone Python script that runs on each worker laptop in the Distributed AI Gateway cluster. It profiles the host machine, registers with the Leader, maintains a heartbeat, and executes AI prompts using a local Ollama instance.
+The backend for **Distributed AI Gateway** is split into two Python programs:
+
+- **`main.py` (Leader Node)**: FastAPI server that handles auth, health checks, and a demo task-dispatch pipeline.
+- **`worker.py` (Worker Node)**: a worker process that registers with the Leader, sends heartbeats, polls for tasks, and runs prompts on a local **Ollama** instance.
 
 ---
 
-## Prerequisites
+## What’s implemented right now
+
+### Leader (`main.py`)
+- **Cassandra connection on startup** (expects Cassandra on `127.0.0.1:9042`, keyspace `web_app`)
+- **Auth backed by Cassandra**
+  - `POST /auth/signup` inserts a user into `web_app.users`
+  - `POST /auth/login` validates credentials against `web_app.users`
+  - Note: passwords are currently stored/compared as plain text in the `password_hash` column (no JWT yet)
+- **Health**
+  - `GET /health` → `{ "status": "ok" }`
+- **Worker integration (currently just logging)**
+  - `POST /register`
+  - `POST /heartbeat`
+- **Demo task pipeline (in-memory queue; placeholder for Kafka)**
+  - `POST /ask` queues a task
+  - `GET /task/{node_id}` worker polls for next task
+  - `POST /task/complete` worker posts result
+  - `GET /task/result/{task_id}` fetch result
+
+### Worker (`worker.py`)
+- Profiles host machine (RAM via `psutil`)
+- Discovers local Ollama models via `GET http://localhost:11434/api/tags`
+- Discovers skills via `server/*.skill`
+- Registers + heartbeats + task polling loop
+- Executes prompts via `POST http://localhost:11434/api/generate` (non-streaming)
+
+---
+
+## Prerequisites (local dev)
 
 | Dependency | Install |
 |---|---|
 | Python 3.10+ | [python.org](https://www.python.org/downloads/) |
+| Docker | [docker.com](https://www.docker.com/) |
 | Ollama | [ollama.com](https://ollama.com/) |
 | At least one Ollama model | `ollama pull llama3.2:3b` |
 
@@ -16,45 +48,99 @@ A standalone Python script that runs on each worker laptop in the Distributed AI
 
 ## Setup (one time)
 
-```bash
+### PowerShell (Windows)
+
+```powershell
 cd server
-python3 -m venv venv
-source venv/bin/activate
+py -m venv venv
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
 ---
 
-## How to Run (3 terminals)
+## How to run locally (Windows-friendly)
+
+You will run **Cassandra + Leader + Worker + Ollama** in separate terminals.
 
 ### Terminal 1 — Start Ollama
-```bash
+
+```powershell
 ollama serve
 ```
-Ollama will start on `http://localhost:11434`.
 
-### Terminal 2 — Start the Leader (FastAPI)
-```bash
-cd server
-source venv/bin/activate
-python3 -m uvicorn main:app --reload
-```
-Leader will start on `http://localhost:8000`.
+Ollama starts on `http://localhost:11434`.
 
-### Terminal 3 — Start the Worker
-```bash
-cd server
-source venv/bin/activate
-python3 worker.py --leader-ip 127.0.0.1
+### Terminal 2 — Start Cassandra (Docker)
+
+```powershell
+cd ..\web-app
+docker compose up -d cassandra
+python scripts\setup_cassandra.py
 ```
 
-> **Multi-laptop setup:** Replace `127.0.0.1` with the Leader's Tailscale VPN IP (e.g., `100.64.0.5`).
+This creates keyspace/tables in Cassandra (see `web-app/db/*.cql`).
+
+### Terminal 3 — Start the Leader (FastAPI)
+
+```powershell
+cd ..\server
+.\venv\Scripts\Activate.ps1
+py -m uvicorn main:app --reload
+```
+
+Leader starts on `http://localhost:8000`.
+
+### Terminal 4 — Start the Worker
+
+```powershell
+cd ..\server
+.\venv\Scripts\Activate.ps1
+py worker.py --leader-ip 127.0.0.1
+```
+
+> Multi-laptop: replace `127.0.0.1` with the Leader’s Tailscale VPN IP (a `100.x.x.x` address).
+
+---
+
+## API reference (current)
+
+### Auth (Cassandra-backed)
+- `POST /auth/signup`
+
+```json
+{ "name": "Alice", "email": "alice@example.com", "password": "password", "role": "client" }
+```
+
+- `POST /auth/login`
+
+```json
+{ "email": "alice@example.com", "password": "password" }
+```
+
+### Health
+- `GET /health`
+
+### Worker ↔ Leader (currently logs only)
+- `POST /register`
+- `POST /heartbeat`
+
+### Demo task pipeline (in-memory)
+- `POST /ask`
+
+```json
+{ "prompt": "Say hi", "model": "llama3.2:3b" }
+```
+
+- `GET /task/{node_id}`
+- `POST /task/complete`
+- `GET /task/result/{task_id}`
 
 ---
 
 ## Expected Output
 
-### Worker terminal (Terminal 3)
+### Worker terminal (Terminal 4)
 ```
 ==================================================
   Worker Node Profile
@@ -73,7 +159,7 @@ Connecting to Leader at http://127.0.0.1:8000...
 [♥] Heartbeat sent — status: idle | tasks done: 0
 ```
 
-### Leader terminal (Terminal 2)
+### Leader terminal (Terminal 3)
 ```
 [REGISTER] node_a1b2c3 | RAM: 8.0GB | Models: ['qwen3:4b', 'llama3.2:3b'] | Skills: ['coding']
 [HEARTBEAT] node_a1b2c3 | Status: idle | Tasks: 0
@@ -83,12 +169,12 @@ Connecting to Leader at http://127.0.0.1:8000...
 
 ## Testing the Full Pipeline
 
-### 1. Send a prompt (Terminal 4)
+### 1. Send a prompt (new terminal)
 
-```bash
-curl -X POST http://localhost:8000/ask \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Say hi", "model": "llama3.2:3b"}'
+```powershell
+curl -Method Post http://localhost:8000/ask `
+  -ContentType "application/json" `
+  -Body '{ "prompt": "Say hi", "model": "llama3.2:3b" }'
 ```
 
 **Response:**
@@ -111,7 +197,7 @@ You will see this in the worker terminal:
 
 ### 3. Retrieve the result
 
-```bash
+```powershell
 curl http://localhost:8000/task/result/task_dbb44622
 ```
 
@@ -131,68 +217,15 @@ curl http://localhost:8000/task/result/task_dbb44622
 
 Workers can advertise their specializations using `.skill` files. Place empty files in the `server/` directory:
 
-```bash
+```powershell
 # This worker can handle coding tasks
-touch coding.skill
+New-Item -ItemType File coding.skill
 
 # This worker can handle general chat
-touch general.skill
+New-Item -ItemType File general.skill
 ```
 
 The worker scans for `*.skill` files on boot and reports them to the Leader during registration. If no `.skill` files are found, the skills list will be empty.
-
----
-
-## API Endpoints (Leader)
-
-These endpoints are currently **placeholder stubs** in `main.py` for testing. They will be replaced with real Cassandra-backed logic by Divya.
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/register` | Worker registers with its profile (node_id, RAM, models, skills) |
-| `POST` | `/heartbeat` | Worker sends keep-alive ping every 5 seconds |
-| `POST` | `/ask` | Queue a prompt for the next available worker |
-| `GET` | `/task/{node_id}` | Worker polls for the next available task |
-| `POST` | `/task/complete` | Worker submits completed Ollama response |
-| `GET` | `/task/result/{task_id}` | Check if a task is completed and get the response |
-
-### JSON Schemas
-
-**POST /register**
-```json
-{
-  "node_id": "node_a1b2c3",
-  "ram_gb": 8.0,
-  "models": ["qwen3:4b", "llama3.2:3b"],
-  "skills": ["coding"]
-}
-```
-
-**POST /heartbeat**
-```json
-{
-  "node_id": "node_a1b2c3",
-  "status": "idle",
-  "tasks_completed": 2
-}
-```
-
-**POST /ask**
-```json
-{
-  "prompt": "What is recursion?",
-  "model": "llama3.2:3b"
-}
-```
-
-**POST /task/complete**
-```json
-{
-  "task_id": "task_dbb44622",
-  "node_id": "node_a1b2c3",
-  "response": "Recursion is when a function calls itself..."
-}
-```
 
 ---
 
@@ -220,8 +253,9 @@ These endpoints are currently **placeholder stubs** in `main.py` for testing. Th
 
 | Problem | Fix |
 |---|---|
-| `Cannot reach Leader` | Make sure `main.py` is running in Terminal 2 |
-| `Models: (none)` | Make sure `ollama serve` is running in Terminal 1 |
-| `ModuleNotFoundError: cassandra` | You forgot to activate the venv: `source venv/bin/activate` |
+| `Cannot reach Leader` | Make sure `main.py` is running (Terminal 3) |
+| `Database not connected` (signup/login fails) | Start Cassandra first (Terminal 2) and run `python scripts\setup_cassandra.py` |
+| `Models: (none)` | Make sure `ollama serve` is running (Terminal 1) and you pulled a model (`ollama pull llama3.2:3b`) |
+| `ModuleNotFoundError: cassandra` | Activate venv and `pip install -r requirements.txt` |
 | `Read timed out` from Ollama | Your machine is slow — the timeout is set to 5 minutes, just wait longer or use a smaller model |
-| `Skills: (none)` | Create a `.skill` file: `touch coding.skill` in the `server/` directory |
+| `Skills: (none)` | Create a `.skill` file (PowerShell: `New-Item -ItemType File coding.skill`) |
