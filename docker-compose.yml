@@ -35,3 +35,16 @@ services:
       - /bin/sh
       - -c
       - "until kafka-topics --bootstrap-server kafka:29092 --list > /dev/null 2>&1; do echo 'Waiting for Kafka...'; sleep 2; done && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic tasks-high-ram --partitions 4 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic tasks-low-ram --partitions 4 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic tasks-general --partitions 4 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic completed-tasks --partitions 4 --replication-factor 1 && echo 'Topics created: tasks-high-ram, tasks-low-ram, tasks-general, completed-tasks'"
+
+  cassandra:
+    image: cassandra:5
+    container_name: web-app-cassandra
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: web-app-dev
+
+volumes:
+  cassandra_data:

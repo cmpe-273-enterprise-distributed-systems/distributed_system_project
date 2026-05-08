@@ -14,6 +14,7 @@ Run:
   python worker.py
 """
 
+import glob
 import os
 import signal
 import sys
@@ -39,11 +40,29 @@ from ollama_client import generate
 # failures, this worker should query that service instead of reading a hardcoded URL.
 LEADER_URL = os.getenv("LEADER_URL", "http://localhost:8000")
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 MODEL = os.getenv("MODEL", "mistral")
 SKILLS = [s.strip() for s in os.getenv("SKILLS", "general").split(",")]
 NODE_ID = os.getenv("NODE_ID") or f"node_{os.urandom(3).hex()}"
 RAM_GB = int(os.getenv("RAM_GB") or round(psutil.virtual_memory().total / (1024 ** 3)))
 HEARTBEAT_INTERVAL = 5
+
+
+# ── Hardware profiling ────────────────────────────────────────────────────────
+
+def get_ollama_models() -> list[str]:
+    try:
+        resp = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+        resp.raise_for_status()
+        return [m["name"] for m in resp.json().get("models", [])]
+    except Exception:
+        return []
+
+
+def get_skills() -> list[str]:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    skill_files = glob.glob(os.path.join(script_dir, "*.skill"))
+    return [os.path.splitext(os.path.basename(f))[0] for f in skill_files]
 
 # ── Shared state (only written from main thread or heartbeat thread) ───────────
 
@@ -62,11 +81,17 @@ def register() -> str:
     this function should query the Discovery Service for the current leader IP and
     update LEADER_URL accordingly so it targets the newly elected leader.
     """
+    detected_models = get_ollama_models()
+    effective_model = detected_models[0] if detected_models else MODEL
+    effective_skills = get_skills() or SKILLS
+
+    print(f"[{NODE_ID}] RAM: {RAM_GB} GB  Model: {effective_model}  Skills: {effective_skills}")
+
     while not _shutdown.is_set():
         try:
             r = httpx.post(
                 f"{LEADER_URL}/register",
-                json={"node_id": NODE_ID, "ram_gb": RAM_GB, "model": MODEL, "skills": SKILLS},
+                json={"node_id": NODE_ID, "ram_gb": RAM_GB, "model": effective_model, "skills": effective_skills},
                 timeout=5,
             )
             r.raise_for_status()

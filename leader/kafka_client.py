@@ -60,7 +60,7 @@ class TaskProducer:
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         )
 
-    def publish(self, request_id: str, prompt: str, user_id: int, user_name: str) -> str:
+    def publish(self, request_id: str, prompt: str, user_id: str, user_name: str) -> str:
         """Publishes the task to the appropriate topic. Returns the chosen topic name."""
         topic = _select_topic(prompt)
         self._producer.send(topic, {

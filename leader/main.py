@@ -64,7 +64,7 @@ class SignupBody(BaseModel):
 
 class AskBody(BaseModel):
     prompt: str
-    user_id: int = 0
+    user_id: str = ""
     user_name: str = "anonymous"
 
 class RegisterBody(BaseModel):
@@ -136,6 +136,7 @@ async def ask(body: AskBody):
     await save_request(
         request_id, body.user_id, body.user_name,
         body.prompt, worker_id, duration_ms, "completed",
+        response=result.get("response", ""),
     )
 
     return {
@@ -172,15 +173,21 @@ async def cluster_stats():
     requests = await get_all_requests()
     users = await get_all_users()
 
+    def _parse_duration_s(d: str) -> float:
+        try:
+            return float(d.rstrip("s"))
+        except (ValueError, AttributeError):
+            return 0.0
+
     online = [n for n in nodes if n.status != "offline"]
-    completed = [r for r in requests if r["status"] == "completed" and r["duration_ms"]]
-    avg_ms = sum(r["duration_ms"] for r in completed) / len(completed) if completed else 0
+    completed = [r for r in requests if r["status"] == "completed" and r.get("duration")]
+    avg_s = sum(_parse_duration_s(r["duration"]) for r in completed) / len(completed) if completed else 0
 
     return {
         "nodesOnline": len(online),
         "nodesTotal": len(nodes),
         "tasksCompleted": sum(n.tasks_completed for n in nodes),
-        "avgResponseTime": f"{avg_ms / 1000:.1f}s",
+        "avgResponseTime": f"{avg_s:.1f}s",
         "activeUsers": len([u for u in users if u["role"] == "client"]),
     }
 
@@ -213,7 +220,7 @@ async def cluster_requests():
             "userName": r["user_name"],
             "prompt": r["prompt"],
             "worker": r["worker_id"] or "unknown",
-            "duration": f"{(r['duration_ms'] or 0) / 1000:.1f}s",
+            "duration": r["duration"],
             "status": r["status"],
             "time": r["created_at"],
         }
@@ -229,12 +236,12 @@ async def admin_get_users():
 
 
 @app.patch("/admin/users/{user_id}")
-async def admin_update_role(user_id: int, body: UpdateRoleBody):
+async def admin_update_role(user_id: str, body: UpdateRoleBody):
     await update_user_role(user_id, body.role)
     return {"success": True}
 
 
 @app.delete("/admin/users/{user_id}")
-async def admin_delete_user(user_id: int):
+async def admin_delete_user(user_id: str):
     await delete_user(user_id)
     return {"success": True}
