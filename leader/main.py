@@ -36,7 +36,9 @@ from database import (
     save_request,
     update_user_role,
 )
+from discovery import DiscoveryClient
 from kafka_client import ResultConsumer, TaskProducer
+from leader_monitor import LeaderMonitor
 from node_config import load_or_create_node_config
 from registry import Registry
 from tailscale_utils import get_advertise_host
@@ -47,6 +49,7 @@ TASK_TIMEOUT = int(os.getenv("TASK_TIMEOUT", "60"))
 registry = Registry()
 producer = TaskProducer(KAFKA_BROKER)
 result_consumer = ResultConsumer(KAFKA_BROKER)
+discovery = DiscoveryClient()
 
 
 @asynccontextmanager
@@ -54,6 +57,28 @@ async def lifespan(app: FastAPI):
     await init_db()
     result_consumer.start(asyncio.get_event_loop())
     asyncio.create_task(registry.check_timeouts())
+
+    cfg = load_or_create_node_config()
+    host = get_advertise_host()
+    port = int(cfg.get("port") or 8000)
+    node_url = f"http://{host}:{port}"
+
+    # Ensure this node is always present in known_nodes on startup.
+    add_or_update_node({
+        "node_id": cfg["node_id"],
+        "role": cfg.get("role", "both"),
+        "priority": int(cfg.get("priority", 100)),
+        "host": host,
+        "port": port,
+        "url": node_url,
+        "status": "alive",
+        "last_heartbeat": int(time.time()),
+    })
+    elect_leader()
+    save_cluster_state()
+
+    monitor = LeaderMonitor(cfg["node_id"], node_url, discovery)
+    asyncio.create_task(monitor.run())
     yield
 
 
@@ -307,6 +332,17 @@ async def leader_info():
     if not leader:
         raise HTTPException(404, "No leader known")
     return leader
+
+
+@app.get("/discovery/leader")
+async def discovery_leader():
+    url = await discovery.resolve()
+    if not url:
+        leader = get_leader()
+        url = leader.get("url") if leader else None
+    if not url:
+        raise HTTPException(404, "No leader known")
+    return {"leader_url": url}
 
 
 @app.get("/.well-known/ai-gateway")
