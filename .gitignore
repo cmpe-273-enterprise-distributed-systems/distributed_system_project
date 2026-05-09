@@ -38,3 +38,6 @@ Thumbs.db
 # ── Logs ──────────────────────────────
 *.log
 logs/
+
+# ── Local cluster state (runtime) ────
+server/config/cluster_state.yaml
