@@ -31,7 +31,7 @@ Here is the master checklist required to take this project from its current mock
 - [ ] **Real-time Responses:** Implement Server-Sent Events (SSE) or WebSockets so the client chat screen streams the AI's response in real-time as it arrives from the worker.
 
 ## 6. 📨 Communication: Kafka Pipeline (Conlyn)
-- [Blocked] **Kafka Cluster / Broker Setup:** Install and configure Apache Kafka on laptops capable of being a Leader. *If a new Leader is elected, it must have a message broker ready to go.* (waiting for service discovery & group concensus on replication direction...will discuss)
+- [x] **Kafka Cluster / Broker Setup:** Install and configure Apache Kafka on laptops capable of being a Leader. *If a new Leader is elected, it must have a message broker ready to go.* (Each of the 3 leader-eligible laptops must be on the Tailscale mesh, then run `kafka/docker-compose.yml` with its own `kafka/.env` — unique `KAFKA_NODE_ID` and that laptop's Tailscale IP as `KAFKA_ADVERTISED_HOST`; shared `KAFKA_CLUSTER_ID` and `KAFKA_QUORUM_VOTERS` listing all 3 peers.)
 - [x] **Smart Dispatcher (Kafka Publisher):** Write the logic that receives a prompt, analyzes required specs, and places it in the correct Kafka topic (e.g., `tasks-high-ram`).
 - [x] **Kafka Consumer:** Implement the listener on workers that constantly polls the Leader's Kafka broker for new tasks matching the worker's skills/RAM.
 - [x] **Result Returner:** Script the logic to package the local Ollama output and push it back to the Leader's Kafka `completed-tasks` topic.
