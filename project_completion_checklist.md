@@ -4,7 +4,7 @@ Here is the master checklist required to take this project from its current mock
 
 ## 1. 🌐 Infrastructure & Networking
 - [ ] **Tailscale Mesh Setup:** Install and configure Tailscale on all participating laptops to establish the private `100.x.x.x` network.
-- [ ] **Discovery Service:** Deploy a lightweight, highly-available service (e.g., a simple cloud function, KV store, or Dynamic DNS) that holds the single source of truth: `Current_Leader_IP`.
+- [x] **Discovery Service:** Deploy a lightweight, highly-available service (e.g., a simple cloud function, KV store, or Dynamic DNS) that holds the single source of truth: `Current_Leader_IP`.
 - [ ] **Ollama Provisioning:** Install Ollama on all worker laptops and pull the required local models (e.g., `mistral`, `phi-2`).
 - [ ] **Worker Skill Files:** Create the local `.skill` files on each worker laptop to define what specialized prompts they are allowed to handle (e.g., coding, creative writing).
 - [ ] Observability 

@@ -1,3 +1,19 @@
+# Root compose file — two intended uses:
+#
+# 1. Single-host local development (run everything):
+#        docker compose up
+#    Brings up a single Kafka broker (RF=1) + Cassandra on the same machine.
+#    This is the default workflow for hacking on the leader/worker locally.
+#
+# 2. Production / multi-laptop demo (run Cassandra only here):
+#        docker compose up cassandra
+#    Run on exactly one designated host. Every leader-eligible laptop then runs
+#    the multi-broker Kafka cluster from kafka/docker-compose.yml instead of
+#    `docker compose up` from this file. See kafka/.env.example for that setup.
+#
+# Don't bring up the kafka service here in the multi-laptop mode — it would
+# conflict with the per-laptop brokers in kafka/docker-compose.yml on port 9092.
+
 version: '3.8'
 
 services:
