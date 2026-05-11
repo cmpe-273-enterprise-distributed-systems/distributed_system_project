@@ -1,13 +1,13 @@
 # Multi-broker Kafka cluster — run this on each leader-eligible laptop.
 #
 # Each laptop runs:
-#     cd kafka && cp .env.example .env && docker compose up -d
+#     cd server/kafka && cp .env.example .env && docker compose up -d
 #
 # The required per-laptop env vars are KAFKA_NODE_ID, KAFKA_ADVERTISED_HOST,
 # KAFKA_CLUSTER_ID, and KAFKA_QUORUM_VOTERS. See .env.example next to this file
 # for the canonical setup.
 #
-# Cassandra is NOT included here — it lives in ../docker-compose.yml at the repo
+# Cassandra is NOT included here — it lives in ../../docker-compose.yml at the repo
 # root and should run on exactly one designated host:  docker compose up cassandra
 
 services:

@@ -1,7 +1,7 @@
 """
 Integration test for the multi-broker Kafka cluster topology.
 
-Brings up kafka/docker-compose.test.yml, validates the cluster forms with
+Brings up server/kafka/docker-compose.test.yml, validates the cluster forms with
 3 brokers and replication-factor 3 topics, kills one broker mid-flight,
 produces + consumes through the survivors, then restarts the killed broker
 and verifies ISR recovery. Tears the cluster down at the end.
@@ -11,7 +11,7 @@ Prerequisites:
   - Python env with kafka-python  (the repo-root .venv has it)
 
 Run from anywhere:
-  /path/to/repo/.venv/bin/python kafka/test_multi_broker.py
+  /path/to/repo/.venv/bin/python server/kafka/test_multi_broker.py
 """
 
 import json
