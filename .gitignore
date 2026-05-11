@@ -43,8 +43,8 @@ logs/
 server/config/cluster_state.yaml
 
 # Leader runtime state (local only)
-leader/config/cluster_state.yaml
-leader/config/leader_url.txt
+server/leader/config/cluster_state.yaml
+server/leader/config/leader_url.txt
 
 # ── Runtime / temp ────────────────────
 **/__pycache__/

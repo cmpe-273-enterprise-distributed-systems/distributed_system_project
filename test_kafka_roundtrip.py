@@ -3,8 +3,8 @@ Integration test: validates the full Kafka round-trip without a real worker or O
 
 Prerequisites:
   1. docker-compose up -d                          (starts Kafka + Cassandra, creates topics)
-  2. cd web-app && python scripts/setup_cassandra.py  (initialise keyspace + tables)
-  3. cd leader && cp .env.example .env && uvicorn main:app  (starts the leader on port 8000)
+  2. cd client && python scripts/setup_cassandra.py  (initialise keyspace + tables)
+  3. cd server/leader && cp .env.example .env && uvicorn main:app  (starts the leader on port 8000)
 
 Then run:
   python test_kafka_roundtrip.py

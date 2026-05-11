@@ -48,7 +48,7 @@ A distributed system where laptops pool compute over a VPN to run local AI model
 
 ## What's done ✅ / What's left 🔲
 <!--
-### Frontend — `web-app/` ✅ DONE
+### Frontend — `client/` ✅ DONE
 | Feature | Status |
 |---|---|
 | Login / Signup screens | ✅ Done |
@@ -92,7 +92,7 @@ To run the complete system (React -> FastAPI -> Cassandra), you will need to ope
 ### 1. The Database (Terminal 1)
 **Requirements:** Docker and Python 3 installed.
 ```bash
-cd web-app
+cd client
 
 # Start the container
 make db-up
@@ -104,7 +104,7 @@ make db-setup
 
 ### 2. The FastAPI Backend (Terminal 2)
 ```bash
-cd server
+cd server/leader
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -115,7 +115,7 @@ python3 -m uvicorn main:app --reload
 ### 3. The React Frontend (Terminal 3)
 **Requirements:** Node.js installed
 ```bash
-cd web-app
+cd client
 
 # Install dependencies (only needed once)
 npm install
@@ -163,7 +163,7 @@ export async function login(email, password) {
 Also create your `.env` file with the leader's Tailscale IP:
 
 ```bash
-# in web-app/
+# in client/
 cp .env.example .env
 # then edit .env and set REACT_APP_LEADER_IP to the leader's actual Tailscale IP
 ```

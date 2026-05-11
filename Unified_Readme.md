@@ -71,12 +71,9 @@ ollama pull llama3.2:3b
 ```
 distributed_system_project/
 ├── server/
-│   ├── main.py              # Leader node (FastAPI)
-│   ├── worker.py            # Worker node (polls leader, runs Ollama)
-│   ├── requirements.txt     # Python dependencies
-│   ├── coding.skill         # Example skill file
-│   └── README.md            # Worker-specific docs
-├── web-app/
+│   ├── leader/              # Leader node (FastAPI)
+│   └── worker/              # Worker node (Kafka consumer + Ollama)
+├── client/
 │   ├── src/
 │   │   ├── api/index.js     # API layer (mock + real calls)
 │   │   ├── context/         # Auth context (localStorage)
@@ -108,7 +105,7 @@ Starts the local AI model server on `http://localhost:11434`.
 ### Terminal 2 — Cassandra Database
 
 ```bash
-cd web-app
+cd client
 
 # Start the container
 make db-up
@@ -122,7 +119,7 @@ make db-setup
 ### Terminal 3 — FastAPI Backend (Leader Node)
 
 ```bash
-cd server
+cd server/leader
 python3 -m venv venv          # only needed once
 source venv/bin/activate
 pip install -r requirements.txt   # only needed once
@@ -146,7 +143,7 @@ python3 worker.py --leader-ip 127.0.0.1
 ### Terminal 5 — React Frontend
 
 ```bash
-cd web-app
+cd client
 npm install                   # only needed once
 cp .env.example .env          # only needed once
 
@@ -265,7 +262,7 @@ The worker scans for `*.skill` files on boot and reports them to the Leader. No 
 
 ## Connecting to the Real Backend
 
-When the backend is fully ready, **only one file changes:** `web-app/src/api/index.js`
+When the backend is fully ready, **only one file changes:** `client/src/api/index.js`
 
 Every function has a comment showing the real endpoint:
 
@@ -281,7 +278,7 @@ export async function getClusterStats() {
 The `.env` file holds the Leader's IP:
 
 ```bash
-# in web-app/
+# in client/
 cp .env.example .env
 # edit .env → set REACT_APP_LEADER_IP to the Leader's Tailscale IP
 ```
@@ -297,7 +294,7 @@ cp .env.example .env
 | `ModuleNotFoundError: cassandra` | Activate the venv: `source venv/bin/activate` |
 | `Read timed out` from Ollama | Use a smaller model (`llama3.2:3b`) or just wait longer |
 | `Skills: (none)` | Create a skill file: `touch server/coding.skill` |
-| `Database not connected` | Start Cassandra first: `cd web-app && make db-up && make db-setup` |
-| `Frontend won't start` | Run `npm install` in `web-app/` |
+| `Database not connected` | Start Cassandra first: `cd client && make db-up && make db-setup` |
+| `Frontend won't start` | Run `npm install` in `client/` |
 
 ---

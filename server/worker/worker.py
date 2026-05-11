@@ -8,7 +8,7 @@ Startup sequence:
   4. Enter the Kafka consume loop — pull tasks, call Ollama, publish results
 
 Run:
-  cd worker
+  cd server/worker
   cp .env.example .env   # edit LEADER_URL, KAFKA_BROKER, MODEL, SKILLS
   pip install -r requirements.txt
   python worker.py
