@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -215,6 +216,51 @@ async def ask(body: AskBody):
         "worker": worker_id,
         "duration": f"{duration_ms / 1000:.1f}s",
     }
+
+
+@app.post("/ask/stream")
+async def ask_stream(body: AskBody):
+    """
+    Server-Sent Events (SSE) endpoint for chat responses.
+    Since worker execution is currently single-shot (Kafka roundtrip),
+    this streams status updates + the final response as soon as it arrives.
+    """
+    request_id = str(uuid.uuid4())
+
+    # Register BEFORE publishing so the consumer thread can't race ahead.
+    event = result_consumer.register(request_id)
+    producer.publish(request_id, body.prompt, body.user_id, body.user_name)
+
+    async def _gen():
+        # Initial event
+        yield "event: status\ndata: queued\n\n"
+
+        start = time.time()
+        while True:
+            try:
+                await asyncio.wait_for(event.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                # Keep-alive + lightweight progress
+                elapsed = time.time() - start
+                yield f"event: status\ndata: running:{elapsed:.1f}\n\n"
+                continue
+
+            result = result_consumer.pop_result(request_id) or {}
+            if result.get("error"):
+                msg = str(result.get("error") or "Unknown error")
+                yield f"event: error\ndata: {msg}\n\n"
+                return
+
+            duration_ms = int(result.get("duration_ms") or 0)
+            worker_id = result.get("worker_id") or "unknown"
+            response = (result.get("response") or "").replace("\r", "")
+            # SSE data must not contain raw newlines unless split across multiple data: lines.
+            data = response.replace("\n", "\\n")
+            yield f"event: result\ndata: {data}\n\n"
+            yield f"event: meta\ndata: worker={worker_id};duration_ms={duration_ms}\n\n"
+            return
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
 
 
 # ── Node registration & heartbeat ────────────────────────────────────────────

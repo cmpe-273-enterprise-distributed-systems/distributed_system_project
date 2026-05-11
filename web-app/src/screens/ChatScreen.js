@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { healthCheck, sendPrompt } from '../api';
+import { healthCheck, sendPromptStream } from '../api';
 
 export default function ChatScreen() {
   const { user, logout } = useAuth();
@@ -29,8 +29,20 @@ export default function ChatScreen() {
     setMessages(prev => [...prev, { role: 'user', content: text }]);
     setLoading(true);
     try {
-      const res = await sendPrompt(text, user?.id, user?.name);
-      setMessages(prev => [...prev, { role: 'assistant', content: res.response }]);
+      // Insert an empty assistant message that we update as the stream arrives.
+      const assistantIndex = messages.length + 1; // user message already appended above
+      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+      let latest = '';
+      const res = await sendPromptStream(text, user?.id, user?.name, ({ type, data }) => {
+        if (type === 'result') {
+          latest = data;
+          setMessages(prev => prev.map((m, i) => (i === assistantIndex ? { ...m, content: latest } : m)));
+        }
+      });
+      if (!latest && res?.response) {
+        setMessages(prev => prev.map((m, i) => (i === assistantIndex ? { ...m, content: res.response } : m)));
+      }
       setStatus('online');
     } catch {
       setStatus('offline');

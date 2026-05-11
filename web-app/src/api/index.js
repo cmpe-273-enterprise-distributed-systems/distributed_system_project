@@ -1,51 +1,144 @@
-/* ─────────────────────────────────────────────
-   api/index.js
-   All network calls in one place.
-   Mock responses are used now — swap each
-   function body for real axios calls once the
-   backend is ready. The signatures stay the same.
-───────────────────────────────────────────── */
+/*
+  api/index.js
+  All network calls in one place.
+
+  Part 5 wiring:
+  - Dynamic leader resolution via a Discovery Service on boot
+  - Self-healing axios interceptor that retries after leader failover
+  - Streaming chat via SSE (POST /ask/stream) with fetch stream reader
+*/
 
 import axios from 'axios';
-const BASE = 'http://localhost:8000';
 
-const delay = (ms = 650) => new Promise(r => setTimeout(r, ms));
+const DISCOVERY_URL = (process.env.REACT_APP_DISCOVERY_URL || '').trim();
+const FALLBACK_LEADER_URL = (process.env.REACT_APP_LEADER_FALLBACK_URL || 'http://localhost:8000').trim();
+// Backwards-compatible: older env used an IP only (no scheme/port).
+const LEGACY_LEADER_IP = (process.env.REACT_APP_LEADER_IP || '').trim();
 
-/* ── Mock data store ──────────────────────── */
+const LEADER_CACHE_KEY = 'ai_gateway_leader_url';
 
-const ADMIN_USER = {
-  id: 0, name: 'Admin', email: 'admin@cluster.local', role: 'admin', joinedAt: '2026-04-01',
-};
+let _leaderUrl = null;
+let _leaderPromise = null;
 
-let mockUsers = [
-  { id: 1, name: 'Shan',   email: 'shan@example.com',   password: 'password', role: 'client', joinedAt: '2026-04-10' },
-  { id: 2, name: 'Abhin',  email: 'abhin@example.com',  password: 'password', role: 'server', joinedAt: '2026-04-10' },
-  { id: 3, name: 'Conlyn', email: 'conlyn@example.com', password: 'password', role: 'server', joinedAt: '2026-04-11' },
-];
-let _nextUserId = 4;
+function _normalizeBase(url) {
+  if (!url) return null;
+  const u = String(url).trim().replace(/\/+$/, '');
+  if (!u) return null;
+  return u;
+}
 
-let mockNodes = [
-  { id: 'node_4f2a1c', ip: '100.64.0.2', status: 'idle',    model: 'mistral-7b', tasksCompleted: 34, lastSeen: Date.now() - 1000,   skills: ['general', 'coding'] },
-  { id: 'node_8b3e9d', ip: '100.64.0.3', status: 'busy',    model: 'mistral-7b', tasksCompleted: 52, lastSeen: Date.now() - 2000,   skills: ['general'] },
-  { id: 'node_2c7f5a', ip: '100.64.0.4', status: 'offline', model: 'phi-2',      tasksCompleted: 18, lastSeen: Date.now() - 240000, skills: ['coding'] },
-  { id: 'node_9a1b6e', ip: '100.64.0.5', status: 'leader',  model: 'mistral-7b', tasksCompleted: 41, lastSeen: Date.now() - 500,   skills: ['general', 'coding'] },
-];
+async function _resolveLeaderFromDiscovery() {
+  if (!DISCOVERY_URL) return null;
+  const res = await fetch(DISCOVERY_URL, { method: 'GET' });
+  if (!res.ok) return null;
+  const txt = (await res.text()).trim();
+  return _normalizeBase(txt);
+}
 
-let mockRequests = [
-  { id: 'req_001', userId: 1, userName: 'Shan',   prompt: 'Explain recursion in simple terms',              worker: 'node_8b3e9d', duration: '12.4s', status: 'completed', time: Date.now() - 120000 },
-  { id: 'req_002', userId: 1, userName: 'Shan',   prompt: 'Write a Python merge sort implementation',       worker: 'node_4f2a1c', duration: '8.1s',  status: 'completed', time: Date.now() - 300000 },
-  { id: 'req_003', userId: 2, userName: 'Abhin',  prompt: 'What is Tailscale and how does it work?',       worker: 'node_9a1b6e', duration: '5.3s',  status: 'completed', time: Date.now() - 600000 },
-  { id: 'req_004', userId: 3, userName: 'Conlyn', prompt: 'Kafka consumer group example in Java',          worker: 'node_4f2a1c', duration: '15.7s', status: 'completed', time: Date.now() - 900000 },
-  { id: 'req_005', userId: 1, userName: 'Shan',   prompt: 'What are the CAP theorem trade-offs?',          worker: 'node_9a1b6e', duration: '9.2s',  status: 'completed', time: Date.now() - 1800000 },
-];
-let _nextReqId = 6;
+function _fromLegacyIp(ip) {
+  const v = String(ip || '').trim();
+  if (!v) return null;
+  if (v.startsWith('http://') || v.startsWith('https://')) return _normalizeBase(v);
+  // Treat as host/IP, default port 8000
+  return _normalizeBase(`http://${v}:8000`);
+}
+
+function _readCachedLeader() {
+  try {
+    return _normalizeBase(localStorage.getItem(LEADER_CACHE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function _writeCachedLeader(url) {
+  try {
+    if (url) localStorage.setItem(LEADER_CACHE_KEY, url);
+  } catch {
+    // ignore
+  }
+}
+
+async function _isHealthy(baseUrl) {
+  const u = _normalizeBase(baseUrl);
+  if (!u) return false;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 1200);
+    const res = await fetch(`${u}/health`, { method: 'GET', signal: ctrl.signal });
+    clearTimeout(t);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureLeader({ forceRefresh = false } = {}) {
+  if (!forceRefresh && _leaderUrl) return _leaderUrl;
+
+  if (!_leaderPromise || forceRefresh) {
+    _leaderPromise = (async () => {
+      const discovered = await _resolveLeaderFromDiscovery();
+      const cached = _readCachedLeader();
+      const legacy = _fromLegacyIp(LEGACY_LEADER_IP);
+      const fallback = _normalizeBase(FALLBACK_LEADER_URL);
+
+      // Try candidates in order, but verify they respond to /health.
+      const candidates = [discovered, cached, legacy, fallback].map(_normalizeBase).filter(Boolean);
+      for (const c of candidates) {
+        if (await _isHealthy(c)) {
+          _leaderUrl = c;
+          _writeCachedLeader(c);
+          return c;
+        }
+      }
+
+      // If nothing responds (e.g. leader booting), still return fallback so UI can show errors.
+      _leaderUrl = fallback || candidates[0] || null;
+      if (_leaderUrl) _writeCachedLeader(_leaderUrl);
+      return _leaderUrl;
+    })().finally(() => {
+      // keep _leaderPromise for dedupe; do not clear
+    });
+  }
+
+  return await _leaderPromise;
+}
+
+const api = axios.create({
+  baseURL: FALLBACK_LEADER_URL,
+  timeout: 15000,
+});
+
+api.interceptors.request.use(async (config) => {
+  const leader = await ensureLeader();
+  config.baseURL = leader;
+  return config;
+});
+
+api.interceptors.response.use(
+  (res) => res,
+  async (err) => {
+    const cfg = err?.config;
+    const hasResponse = !!err?.response;
+    const status = err?.response?.status;
+
+    // Retry only once for leader failover / network errors.
+    if (cfg && !cfg.__retried && (!hasResponse || [502, 503, 504].includes(status))) {
+      cfg.__retried = true;
+      await ensureLeader({ forceRefresh: true });
+      return api.request(cfg);
+    }
+    throw err;
+  }
+);
 
 /* ── Auth ─────────────────────────────────── */
 
 // Real: POST /auth/login  { email, password }
 export async function login(email, password) {
   try {
-    const res = await axios.post(`${BASE}/auth/login`, { email, password });
+    const res = await api.post(`/auth/login`, { email, password });
     return res.data;
   } catch (err) {
     if (err.response && err.response.data && err.response.data.detail) {
@@ -58,7 +151,7 @@ export async function login(email, password) {
 // Real: POST /auth/signup  { name, email, password, role }
 export async function signup(name, email, password, role) {
   try {
-    const res = await axios.post(`${BASE}/auth/signup`, { name, email, password, role });
+    const res = await api.post(`/auth/signup`, { name, email, password, role });
     return res.data;
   } catch (err) {
     if (err.response && err.response.data && err.response.data.detail) {
@@ -72,69 +165,54 @@ export async function signup(name, email, password, role) {
 
 // Real: GET /cluster/stats
 export async function getClusterStats() {
-  await delay(400);
-  const online = mockNodes.filter(n => n.status !== 'offline').length;
-  const tasks  = mockNodes.reduce((s, n) => s + n.tasksCompleted, 0);
-  return {
-    nodesOnline:     online,
-    nodesTotal:      mockNodes.length,
-    tasksCompleted:  tasks,
-    avgResponseTime: '10.4s',
-    activeUsers:     mockUsers.filter(u => u.role === 'client').length,
-  };
+  const res = await api.get(`/cluster/stats`);
+  return res.data;
 }
 
 // Real: GET /cluster/nodes
 export async function getNodes() {
-  await delay(400);
-  return [...mockNodes];
+  const res = await api.get(`/cluster/nodes`);
+  return res.data;
 }
 
 // Real: GET /cluster/requests
 export async function getRequests() {
-  await delay(400);
-  return [...mockRequests].sort((a, b) => b.time - a.time);
+  const res = await api.get(`/cluster/requests`);
+  return res.data;
 }
 
 /* ── Admin ────────────────────────────────── */
 
 // Real: GET /admin/users
 export async function getUsers() {
-  await delay(400);
-  return mockUsers.map(({ password: _, ...u }) => u);
+  const res = await api.get(`/admin/users`);
+  return res.data;
 }
 
 // Real: PATCH /admin/users/:id  { role }
 export async function updateUserRole(userId, role) {
-  await delay(400);
-  const user = mockUsers.find(u => u.id === userId);
-  if (!user) throw new Error('User not found.');
-  user.role = role;
-  const { password: _, ...safe } = user;
-  return safe;
+  const res = await api.patch(`/admin/users/${userId}`, { role });
+  return res.data;
 }
 
 // Real: DELETE /admin/users/:id
 export async function removeUser(userId) {
-  await delay(400);
-  const idx = mockUsers.findIndex(u => u.id === userId);
-  if (idx === -1) throw new Error('User not found.');
-  mockUsers.splice(idx, 1);
-  return { success: true };
+  const res = await api.delete(`/admin/users/${userId}`);
+  return res.data;
 }
 
 /* ── Node ─────────────────────────────────── */
 
 // Real: POST /register  { node_id, ram_gb, model, skills }
 export async function registerNode(nodeData) {
-  await delay(800);
-  return { status: 'registered', assigned_queue: `worker_${nodeData.node_id}` };
+  const res = await api.post(`/register`, nodeData);
+  return res.data;
 }
 
 // Real: POST /heartbeat  { node_id, status, tasks_completed }
 export async function sendHeartbeat(nodeData) {
-  await delay(300);
-  return { status: 'ok', is_leader: false, new_skill: null };
+  const res = await api.post(`/heartbeat`, nodeData);
+  return res.data;
 }
 
 /* ── Chat ─────────────────────────────────── */
@@ -142,7 +220,7 @@ export async function sendHeartbeat(nodeData) {
 // Real: GET /health
 export async function healthCheck() {
   try {
-    const res = await axios.get(`${BASE}/health`, { timeout: 5000 });
+    const res = await api.get(`/health`, { timeout: 5000 });
     return res.data;
   } catch (err) {
     // ChatScreen uses .catch() to flip the UI to "offline"
@@ -152,17 +230,71 @@ export async function healthCheck() {
 
 // Real: POST /ask  { prompt }
 export async function sendPrompt(prompt, userId, userName) {
-  await delay(1800);
-  const workers = mockNodes.filter(n => n.status !== 'offline');
-  const worker  = workers[Math.floor(Math.random() * workers.length)];
-  const duration = `${(Math.random() * 15 + 3).toFixed(1)}s`;
-  mockRequests.push({
-    id: `req_${String(_nextReqId++).padStart(3, '0')}`,
-    userId, userName, prompt,
-    worker: worker?.id || 'unknown',
-    duration, status: 'completed', time: Date.now(),
+  const res = await api.post(`/ask`, { prompt, user_id: userId || '', user_name: userName || 'anonymous' });
+  return res.data;
+}
+
+// Streaming: POST /ask/stream (SSE)
+// Usage: sendPromptStream(prompt, userId, userName, ({ type, data }) => { ... })
+export async function sendPromptStream(prompt, userId, userName, onEvent) {
+  const leader = await ensureLeader();
+  const url = `${leader}/ask/stream`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, user_id: userId || '', user_name: userName || 'anonymous' }),
   });
-  return {
-    response: `[Mock] This is a simulated response to: "${prompt}"\n\nIn production this reply comes from an Ollama model running on a worker node in the cluster.`,
+
+  if (!res.ok || !res.body) {
+    throw new Error('Failed to start streaming request.');
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buf = '';
+  let finalResponse = '';
+
+  const emit = (type, data) => {
+    try { onEvent && onEvent({ type, data }); } catch { /* ignore */ }
   };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    // Parse SSE frames split by blank line
+    while (true) {
+      const idx = buf.indexOf('\n\n');
+      if (idx === -1) break;
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+
+      const lines = frame.split('\n').map(l => l.replace(/\r$/, ''));
+      let evt = 'message';
+      let dataLines = [];
+      for (const line of lines) {
+        if (line.startsWith('event:')) evt = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+      }
+      const data = dataLines.join('\n');
+      if (!data) continue;
+
+      if (evt === 'result') {
+        finalResponse = data.replace(/\\n/g, '\n');
+        emit('result', finalResponse);
+      } else if (evt === 'error') {
+        emit('error', data);
+        throw new Error(data);
+      } else {
+        emit(evt, data);
+      }
+    }
+  }
+
+  if (!finalResponse) {
+    throw new Error('Stream ended without a response.');
+  }
+  return { response: finalResponse };
 }
