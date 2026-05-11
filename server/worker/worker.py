@@ -15,6 +15,7 @@ Run:
 """
 
 import glob
+import json
 import os
 import signal
 import sys
@@ -32,13 +33,15 @@ from ollama_client import generate
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-# TODO(discovery): LEADER_URL is static — loaded once from .env and never updated.
-# If the current leader goes down and a new leader is elected at a different IP,
-# this worker will retry forever against a dead address. The fix requires a
-# Discovery Service (an external KV store, DNS record, or hosted endpoint) that
-# always holds the current leader's IP. On startup and after consecutive heartbeat
-# failures, this worker should query that service instead of reading a hardcoded URL.
-LEADER_URL = os.getenv("LEADER_URL", "http://localhost:8000")
+# LEADER_URL from .env is used as the fallback bootstrap address. The actual
+# leader URL is resolved at runtime — first from the Upstash discovery service
+# (if configured), then from this fallback. The cached value is updated again
+# after HEARTBEAT_FAILURE_THRESHOLD consecutive heartbeat failures so workers
+# can follow the leader to its new home after a failover.
+FALLBACK_LEADER_URL = os.getenv("LEADER_URL", "http://localhost:8000")
+UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_READ_ONLY_TOKEN", "").strip()
+
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 MODEL = os.getenv("MODEL", "mistral")
@@ -46,6 +49,41 @@ SKILLS = [s.strip() for s in os.getenv("SKILLS", "general").split(",")]
 NODE_ID = os.getenv("NODE_ID") or f"node_{os.urandom(3).hex()}"
 RAM_GB = int(os.getenv("RAM_GB") or round(psutil.virtual_memory().total / (1024 ** 3)))
 HEARTBEAT_INTERVAL = 5
+HEARTBEAT_FAILURE_THRESHOLD = 3
+
+_leader_url = FALLBACK_LEADER_URL
+_leader_lock = threading.Lock()
+
+
+def _get_leader_url() -> str:
+    with _leader_lock:
+        return _leader_url
+
+
+def _set_leader_url(url: str) -> None:
+    global _leader_url
+    with _leader_lock:
+        _leader_url = url
+
+
+def resolve_leader_from_discovery() -> str | None:
+    """Return the current leader URL from Upstash, or None if unavailable."""
+    if not UPSTASH_URL or not UPSTASH_TOKEN:
+        return None
+    try:
+        r = httpx.get(
+            f"{UPSTASH_URL}/get/leader",
+            headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+            timeout=5,
+        )
+        r.raise_for_status()
+        raw = r.json().get("result")
+        if not raw:
+            return None
+        return (json.loads(raw).get("leader_url") or "").strip() or None
+    except Exception as exc:
+        print(f"[{NODE_ID}] Discovery resolve failed: {exc}")
+        return None
 
 
 # ── Hardware profiling ────────────────────────────────────────────────────────
@@ -76,10 +114,10 @@ _shutdown = threading.Event()
 def register() -> str:
     """Block until the leader accepts registration. Returns the Kafka broker address.
 
-    TODO(discovery): This retries against the same LEADER_URL indefinitely. If the
-    leader is permanently gone, the retry loop will never succeed. Before each retry,
-    this function should query the Discovery Service for the current leader IP and
-    update LEADER_URL accordingly so it targets the newly elected leader.
+    Re-resolves the leader URL from the discovery service on every retry attempt
+    so a worker started before any leader is up will pick up the leader as soon
+    as one publishes itself, and a worker rejoining after a failover will target
+    the new leader.
     """
     detected_models = get_ollama_models()
     effective_model = detected_models[0] if detected_models else MODEL
@@ -88,19 +126,22 @@ def register() -> str:
     print(f"[{NODE_ID}] RAM: {RAM_GB} GB  Model: {effective_model}  Skills: {effective_skills}")
 
     while not _shutdown.is_set():
+        if discovered := resolve_leader_from_discovery():
+            _set_leader_url(discovered)
+        url = _get_leader_url()
         try:
             r = httpx.post(
-                f"{LEADER_URL}/register",
+                f"{url}/register",
                 json={"node_id": NODE_ID, "ram_gb": RAM_GB, "model": effective_model, "skills": effective_skills},
                 timeout=5,
             )
             r.raise_for_status()
             data = r.json()
             broker = data.get("kafka_broker", KAFKA_BROKER)
-            print(f"[{NODE_ID}] Registered with leader at {LEADER_URL}. Kafka broker: {broker}")
+            print(f"[{NODE_ID}] Registered with leader at {url}. Kafka broker: {broker}")
             return broker
         except Exception as e:
-            print(f"[{NODE_ID}] Registration failed ({e}). Retrying in 5 s…")
+            print(f"[{NODE_ID}] Registration failed against {url} ({e}). Retrying in 5 s…")
             time.sleep(5)
     return KAFKA_BROKER
 
@@ -109,14 +150,18 @@ def register() -> str:
 
 def heartbeat_loop(kafka: WorkerKafka):
     global _current_status
+    failures = 0
     while not _shutdown.is_set():
+        url = _get_leader_url()
         try:
             r = httpx.post(
-                f"{LEADER_URL}/heartbeat",
+                f"{url}/heartbeat",
                 json={"node_id": NODE_ID, "status": _current_status, "tasks_completed": _tasks_completed},
                 timeout=5,
             )
+            r.raise_for_status()
             data = r.json()
+            failures = 0
             if data.get("reregister"):
                 print(f"[{NODE_ID}] Leader asked us to re-register.")
                 new_broker = register()
@@ -125,15 +170,18 @@ def heartbeat_loop(kafka: WorkerKafka):
                 print(f"[{NODE_ID}] Kafka broker changed to {new_broker}.")
                 kafka.request_reconnect(new_broker)
         except Exception as e:
-            print(f"[{NODE_ID}] Heartbeat failed: {e}")
-            # TODO(discovery): A heartbeat failure may mean the leader is down, not
-            # just temporarily unreachable. After N consecutive failures, this worker
-            # should query the Discovery Service for the new leader IP, update
-            # LEADER_URL, call register() to join the new leader, and signal a Kafka
-            # broker reconnect via kafka.request_reconnect(). Until the Discovery
-            # Service exists, the worker will simply retry against the dead URL and
-            # stall — tasks already in Kafka partitions will still be processed, but
-            # no new tasks will be routable to this worker and heartbeats won't resume.
+            failures += 1
+            print(f"[{NODE_ID}] Heartbeat to {url} failed ({failures}/{HEARTBEAT_FAILURE_THRESHOLD}): {e}")
+            if failures >= HEARTBEAT_FAILURE_THRESHOLD:
+                discovered = resolve_leader_from_discovery()
+                if discovered and discovered != url:
+                    print(f"[{NODE_ID}] Discovery reports new leader: {discovered}. Re-registering.")
+                    _set_leader_url(discovered)
+                    new_broker = register()
+                    kafka.request_reconnect(new_broker)
+                    failures = 0
+                else:
+                    print(f"[{NODE_ID}] Discovery has no new leader yet; will keep trying.")
         time.sleep(HEARTBEAT_INTERVAL)
 
 

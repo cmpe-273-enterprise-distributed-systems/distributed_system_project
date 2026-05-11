@@ -1,19 +1,24 @@
 """
-DiscoveryClient — publish and resolve the active leader URL.
+DiscoveryClient — publish and resolve the active leader URL via Upstash Redis.
 
-Backends (tried in order):
-  1. HTTP  — set DISCOVERY_URL env var to any PUT-able endpoint
-             (Cloudflare Worker KV, a simple hosted text file, etc.).
-             PUT writes the leader URL; GET reads it back.
-  2. File  — config/leader_url.txt — always written locally; used as
-             fallback when DISCOVERY_URL is unset or unreachable.
+Storage:
+  Key   = "leader"
+  Value = JSON-encoded record stored as a Redis string:
+            {"leader_url": "...", "node_id": "...", "cluster_id": "...", "updated_at": int}
 
-The leader node exposes GET /discovery/leader so clients and workers can
-ask any known seed node for the current leader without external infra.
+REST API (https://upstash.com/docs/redis/features/restapi):
+  POST {UPSTASH_REDIS_REST_URL}/set/leader   body = value         → {"result":"OK"}
+  GET  {UPSTASH_REDIS_REST_URL}/get/leader                         → {"result":"<value>"|null}
+  Both require:  Authorization: Bearer {UPSTASH_REDIS_REST_TOKEN}
+
+The local file (config/leader_url.txt) is preserved as an offline fallback so
+the cluster can still recover its bearings if Upstash is briefly unreachable.
 """
 
+import json
 import logging
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -25,11 +30,15 @@ _FILE_PATH = Path(__file__).parent / "config" / "leader_url.txt"
 
 class DiscoveryClient:
     def __init__(self):
-        self._url = os.getenv("DISCOVERY_URL", "").strip()
+        self._url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+        self._token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
         _FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    async def publish(self, leader_url: str) -> bool:
-        """Announce that `leader_url` is the active leader. Returns True on success."""
+    def _auth_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._token}"}
+
+    async def publish(self, leader_url: str, node_id: str = "", cluster_id: str = "") -> bool:
+        """Announce `leader_url` as the active leader. Returns True on success."""
         if not leader_url:
             return False
 
@@ -38,31 +47,45 @@ class DiscoveryClient:
         except OSError as exc:
             logger.warning("Discovery: could not write local file: %s", exc)
 
-        if not self._url:
-            return True
+        if not self._url or not self._token:
+            return True  # local-only mode
+
+        record = json.dumps({
+            "leader_url": leader_url.strip(),
+            "node_id": node_id,
+            "cluster_id": cluster_id,
+            "updated_at": int(time.time()),
+        })
 
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.put(
-                    self._url,
-                    content=leader_url.encode(),
-                    headers={"Content-Type": "text/plain"},
+                r = await client.post(
+                    f"{self._url}/set/leader",
+                    content=record,
+                    headers=self._auth_headers(),
                 )
                 r.raise_for_status()
-                logger.info("Discovery updated: %s -> %s", self._url, leader_url)
+                logger.info("Discovery updated -> %s", leader_url)
                 return True
         except Exception as exc:
-            logger.warning("Discovery publish to %s failed: %s", self._url, exc)
+            logger.warning("Discovery publish failed: %s", exc)
             return False
 
     async def resolve(self) -> str | None:
         """Return the current leader URL, or None if unknown."""
-        if self._url:
+        if self._url and self._token:
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    r = await client.get(self._url)
+                    r = await client.get(
+                        f"{self._url}/get/leader",
+                        headers=self._auth_headers(),
+                    )
                     if r.status_code == 200:
-                        return r.text.strip() or None
+                        raw = r.json().get("result")
+                        if raw:
+                            url = (json.loads(raw).get("leader_url") or "").strip()
+                            if url:
+                                return url
             except Exception as exc:
                 logger.debug("Discovery remote resolve failed: %s", exc)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 from typing import Optional
@@ -63,8 +64,16 @@ def get_tailscale_hostname() -> Optional[str]:
 def get_advertise_host() -> str:
     """
     Returns a host string that other nodes can reach.
-    Prefer MagicDNS hostname, else Tailscale IP, else local hostname.
+    Explicit LEADER_ADVERTISE_HOST env var wins; otherwise prefer MagicDNS,
+    then Tailscale IP, then the local hostname.
+
+    The env override matters on single-host dev (especially WSL2), where
+    socket.gethostname() returns the Windows host name — resolvable but not
+    reachable from the worker process.
     """
+    override = os.getenv("LEADER_ADVERTISE_HOST", "").strip()
+    if override:
+        return override
     hn = get_tailscale_hostname()
     if hn:
         return hn

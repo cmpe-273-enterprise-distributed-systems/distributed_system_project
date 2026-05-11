@@ -1,0 +1,92 @@
+# Single-machine sanity check for the multi-broker Kafka topology.
+# Spins up 3 brokers on one docker network, mimicking docker-compose.yml in
+# this directory but with one intentional difference: inter-broker traffic
+# uses the INSIDE listener (over the docker network) instead of OUTSIDE. In
+# prod brokers talk to each other across Tailscale; here they share a docker
+# network, so INSIDE is the natural channel.
+#
+# Each broker's OUTSIDE listener is mapped to a unique host port (9092/9192/9292)
+# so host-side kafka tools (or our Python clients) can reach all three at
+# localhost:9092, localhost:9192, localhost:9292.
+#
+# Run:    docker compose -f kafka/docker-compose.test.yml up -d
+# Tear:   docker compose -f kafka/docker-compose.test.yml down -v
+#
+# NOT for deployment — see docker-compose.yml in this directory for the real
+# multi-laptop setup.
+
+x-kafka-common: &kafka-common
+  image: confluentinc/cp-kafka:7.5.0
+
+x-kafka-env: &kafka-env
+  KAFKA_PROCESS_ROLES: broker,controller
+  CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+  KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093'
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+  KAFKA_LISTENERS: CONTROLLER://0.0.0.0:9093,INSIDE://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+  KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+services:
+  kafka-1:
+    <<: *kafka-common
+    container_name: kafka-1
+    hostname: kafka-1
+    ports:
+      - "9092:9092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka-1:29092,OUTSIDE://localhost:9092
+
+  kafka-2:
+    <<: *kafka-common
+    container_name: kafka-2
+    hostname: kafka-2
+    ports:
+      - "9192:9092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka-2:29092,OUTSIDE://localhost:9192
+
+  kafka-3:
+    <<: *kafka-common
+    container_name: kafka-3
+    hostname: kafka-3
+    ports:
+      - "9292:9092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka-3:29092,OUTSIDE://localhost:9292
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init-test
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
+    entrypoint: []
+    command:
+      - /bin/sh
+      - -c
+      - |
+        until kafka-topics --bootstrap-server kafka-1:29092 --list > /dev/null 2>&1; do
+          echo 'Waiting for kafka-1...'; sleep 2
+        done
+        for topic in tasks-high-ram tasks-low-ram tasks-general completed-tasks; do
+          until kafka-topics --bootstrap-server kafka-1:29092 --create --if-not-exists \
+              --topic "$$topic" --partitions 4 --replication-factor 3 \
+              --config min.insync.replicas=2; do
+            echo "Topic $$topic pending (waiting for full quorum)..."
+            sleep 5
+          done
+        done
+        echo 'All topics ensured: tasks-high-ram, tasks-low-ram, tasks-general, completed-tasks'
