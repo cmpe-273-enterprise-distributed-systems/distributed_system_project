@@ -41,5 +41,29 @@ logs/
 
 # ── Local cluster state (runtime) ────
 server/config/cluster_state.yaml
+
+# Leader runtime state (local only)
+leader/config/cluster_state.yaml
+leader/config/leader_url.txt
+
+# ── Runtime / temp ────────────────────
+**/__pycache__/
+**/.pytest_cache/
+**/*.py[cod]
+**/*.pyo
+**/.DS_Store
+**/Thumbs.db
+**/*.swp
+**/*.swo
+
+# Node / frontend artifacts
+**/node_modules/
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/package-lock.json
+**/dist/
+**/build/
+
 # ── Testing ───────────────────────────
 *.db
