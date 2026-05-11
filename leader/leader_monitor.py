@@ -68,7 +68,7 @@ class LeaderMonitor:
 
         if leader.get("node_id") == self._node_id:
             self._failures = 0
-            await self._discovery.publish(self._node_url)
+            await self._discovery.publish(self._node_url, node_id=self._node_id)
             return
 
         alive = await _ping(leader.get("url", ""))
@@ -104,7 +104,7 @@ class LeaderMonitor:
         logger.info("This node is now the leader — broadcasting and updating discovery")
         await asyncio.gather(
             self._broadcast_state(),
-            self._discovery.publish(self._node_url),
+            self._discovery.publish(self._node_url, node_id=self._node_id),
         )
 
     async def _broadcast_state(self) -> None:
