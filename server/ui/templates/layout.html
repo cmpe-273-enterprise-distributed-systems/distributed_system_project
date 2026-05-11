@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Server Node — {% if page == 'setup' %}Setup Check{% elif page == 'join' %}Join cluster{% else %}Cluster Status{% endif %}</title>
+  <style>
+    :root {
+      --bg:      #0f1117;
+      --surface: #181a20;
+      --surface2:#1e2028;
+      --border:  #2a2c36;
+      --text:    #e8eaf0;
+      --muted:   #636880;
+      --sub:     #9ba1b6;
+      --purple:  #6c56f5;
+      --plite:   rgba(108,86,245,.12);
+      --teal:    #0ea882;
+      --tlite:   rgba(14,168,130,.12);
+      --yellow:  #d97706;
+      --ylite:   rgba(217,119,6,.12);
+      --red:     #e5424d;
+      --rlite:   rgba(229,66,77,.12);
+      --radius:  10px;
+      --radius-sm: 7px;
+      --shadow:  0 4px 20px rgba(0,0,0,.35);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+           background: var(--bg); color: var(--text); min-height: 100vh;
+           display: flex; flex-direction: column; }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 28px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.25);
+    }
+    .logo {
+      width: 34px; height: 34px; border-radius: 9px;
+      background: var(--teal);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px;
+      box-shadow: 0 3px 10px rgba(14,168,130,.30);
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 15px; font-weight: 800; letter-spacing: -.01em; }
+    header p  { font-size: 11px; color: var(--muted); margin-top: 1px; }
+
+    /* ── Nav ── */
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: auto;
+    }
+    nav a {
+      text-decoration: none;
+      padding: 7px 14px;
+      border-radius: 100px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      color: var(--sub);
+      background: var(--surface2);
+      transition: all .15s;
+    }
+    nav a:hover { color: var(--text); border-color: var(--sub); }
+    nav a.active { background: var(--plite); border-color: var(--purple); color: var(--purple); }
+
+    /* ── Main ── */
+    main { flex: 1; padding: 28px; max-width: 960px; width: 100%; margin: 0 auto; }
+
+    /* ── Section card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+    .card-header {
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      padding: 13px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .card-header h2 {
+      font-size: 11px; font-weight: 800;
+      text-transform: uppercase; letter-spacing: .07em;
+      color: var(--sub);
+    }
+    .card-body { padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+
+    /* ── Badge ── */
+    .badge {
+      font-size: 11px; font-weight: 800;
+      padding: 4px 10px; border-radius: 100px;
+      letter-spacing: .04em; text-transform: uppercase;
+    }
+    .badge-ok     { color: var(--teal);   background: var(--tlite); border: 1px solid rgba(14,168,130,.35); }
+    .badge-warn   { color: var(--yellow); background: var(--ylite); border: 1px solid rgba(217,119,6,.25);  }
+    .badge-fail   { color: var(--red);    background: var(--rlite); border: 1px solid rgba(229,66,77,.25);  }
+    .badge-info   { color: var(--purple); background: var(--plite); border: 1px solid rgba(108,86,245,.25); }
+
+    /* ── Check item ── */
+    .check {
+      border-radius: var(--radius-sm);
+      padding: 13px 16px;
+    }
+    .check.ok   { background: var(--tlite); border: 1px solid rgba(14,168,130,.35); }
+    .check.warn { background: var(--ylite); border: 1px solid rgba(217,119,6,.25);  }
+    .check.fail { background: var(--rlite); border: 1px solid rgba(229,66,77,.25);  }
+
+    .check-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 7px; }
+    .check-name { font-size: 14px; font-weight: 800; }
+    .check.ok   .check-name { color: var(--teal);   }
+    .check.warn .check-name { color: var(--yellow); }
+    .check.fail .check-name { color: var(--red);    }
+
+    .check-detail { font-size: 13px; color: var(--sub); line-height: 1.5; word-break: break-word; }
+    .check-model-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .pill-model-tag {
+      font-size: 11px;
+      font-weight: 600;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      word-break: break-all;
+      max-width: 100%;
+    }
+    .check-help   { font-size: 12px; color: var(--muted); margin-top: 9px; line-height: 1.45; }
+    .check-help strong { color: var(--sub); }
+
+    /* ── Node card ── */
+    .node {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+    }
+    .node-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .node-id  { font-size: 13px; font-weight: 800; color: var(--text); font-family: monospace; }
+    .node-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .node-meta span { color: var(--sub); }
+    .pill {
+      display: inline-block;
+      font-size: 11px; font-weight: 700;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 100px; padding: 2px 8px; color: var(--sub);
+      margin-right: 4px; margin-top: 6px;
+    }
+    .pill-node-role {
+      font-size: 10px; font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-top: 0;
+      margin-right: 0;
+      flex-shrink: 0;
+    }
+    .pill-node-role--leader {
+      color: var(--teal);
+      background: var(--tlite);
+      border-color: rgba(14,168,130,.4);
+    }
+    .pill-node-role--worker {
+      color: var(--sub);
+      background: var(--surface2);
+    }
+    .node-id-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    /* ── Cluster meta ── */
+    .cluster-meta { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 14px; }
+    .cluster-meta .label { font-size: 12px; color: var(--muted); }
+    .cluster-meta code {
+      font-size: 12px; font-family: monospace;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; padding: 2px 8px; color: var(--sub);
+    }
+
+    /* ── Refresh button ── */
+    .refresh-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 7px 14px; border-radius: 100px;
+      background: var(--plite); border: 1px solid rgba(108,86,245,.35);
+      color: var(--purple); font-size: 12px; font-weight: 700;
+      cursor: pointer; text-decoration: none; transition: background .15s, opacity .15s, border-color .15s;
+    }
+    .refresh-btn:hover { background: rgba(108,86,245,.22); }
+    .refresh-btn.is-busy {
+      pointer-events: none;
+      opacity: 0.88;
+      border-color: rgba(108,86,245,.55);
+    }
+    .refresh-btn .refresh-ico {
+      display: inline-block;
+      transform-origin: 50% 55%;
+    }
+    .refresh-btn.is-busy .refresh-ico {
+      animation: refresh-spin 0.65s linear infinite;
+    }
+    @keyframes refresh-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ── Timestamp ── */
+    .ts { font-size: 11px; color: var(--muted); }
+
+    /* ── Empty state ── */
+    .empty { padding: 32px; text-align: center; color: var(--muted); font-size: 13px; }
+
+    /* ── Error banner ── */
+    .error-banner {
+      background: var(--rlite); border: 1px solid rgba(229,66,77,.25);
+      border-radius: var(--radius-sm); padding: 12px 16px;
+      font-size: 13px; color: var(--red); word-break: break-word;
+      margin-bottom: 14px;
+    }
+
+    /* ── Join cluster form ── */
+    .join-field { margin-bottom: 16px; }
+    .join-field label {
+      display: block; font-size: 12px; font-weight: 700; color: var(--sub);
+      margin-bottom: 6px; letter-spacing: 0.02em;
+    }
+    .join-input, .join-textarea {
+      width: 100%; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--text); font-size: 13px;
+      padding: 10px 12px; font-family: inherit;
+    }
+    .join-textarea {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      min-height: 200px; resize: vertical; line-height: 1.45;
+    }
+    .join-hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 6px; }
+    .btn-primary {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 18px; border-radius: 100px; border: none; cursor: pointer;
+      background: var(--teal); color: var(--bg); font-size: 13px; font-weight: 800;
+    }
+    .btn-primary:hover { filter: brightness(1.06); }
+    .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+    .join-result {
+      margin-top: 14px; padding: 12px 14px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px; white-space: pre-wrap; word-break: break-word;
+      color: var(--sub); max-height: 360px; overflow: auto;
+    }
+    .join-hero { margin-bottom: 22px; }
+    .join-hero h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.01em; margin-bottom: 10px; }
+    .join-steps {
+      margin: 0 0 0 1.1rem; padding: 0; color: var(--muted); font-size: 13px; line-height: 1.55; max-width: 58ch;
+    }
+    .join-steps li { margin-bottom: 6px; }
+    .join-steps strong { color: var(--sub); font-weight: 700; }
+    .bootstrap-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .bootstrap-table td { padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .bootstrap-table tr:last-child td { border-bottom: none; }
+    .bootstrap-label { color: var(--sub); font-weight: 700; width: 26%; white-space: nowrap; }
+    .bootstrap-url { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--text); word-break: break-all; }
+    .bootstrap-actions { text-align: right; white-space: nowrap; width: 1%; }
+    .btn-inline {
+      display: inline-block; margin-left: 6px; padding: 5px 11px; border-radius: 8px;
+      font-size: 11px; font-weight: 700; cursor: pointer; border: 1px solid var(--border);
+      background: var(--surface2); color: var(--sub);
+    }
+    .btn-inline:hover { color: var(--text); border-color: var(--sub); }
+    .btn-inline.btn-use { background: var(--plite); border-color: rgba(108,86,245,.35); color: var(--purple); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🖥</div>
+  <div>
+    <h1>Server Node</h1>
+    <p>Distributed AI Gateway</p>
+  </div>
+  <nav>
+    <a href="/" class="{% if page == 'setup' %}active{% endif %}">Setup Check</a>
+    <a href="/servers" class="{% if page == 'servers' %}active{% endif %}">Cluster Status</a>
+    <a href="/join" class="{% if page == 'join' %}active{% endif %}">Join cluster</a>
+  </nav>
+</header>
+
+<main>
+
+  {# ──────────────── Setup Check ──────────────── #}
+  {% if page == 'setup' %}
+
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+    <div>
+      <h2 style="font-size:20px;font-weight:800;letter-spacing:-.01em;">System Readiness</h2>
+      <p style="font-size:13px;color:var(--muted);margin-top:4px;">
+        Requirements for this machine to participate in the cluster.
+      </p>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span class="badge badge-warn" id="setup-overall-badge">…</span>
+      <a href="/" class="refresh-btn" id="btn-setup-rerun" data-refresh-path="/"><span class="refresh-ico" aria-hidden="true">↻</span> Re-run</a>
+    </div>
+  </div>
+
+  <div class="card" id="setup-card">
+    <div class="card-header">
+      <h2 id="setup-h2-count">Checks</h2>
+      <span class="ts" id="setup-ts"></span>
+    </div>
+    <div class="card-body" id="setup-checks-body">
+      <div class="empty" id="setup-loading-msg">Loading readiness checks (Tailscale, Ollama, Kafka, Cassandra)…</div>
+    </div>
+  </div>
+  <script>
+  (function () {
+    function esc(s) {
+      if (s == null || s === undefined) return "";
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+    function tsUtc(sec) {
+      try {
+        if (!sec) return "";
+        var d = new Date(parseInt(sec, 10) * 1000);
+        return d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+      } catch (e) { return String(sec); }
+    }
+    function renderSetup(data) {
+      var overall = data.overall || "warn";
+      var badge = document.getElementById("setup-overall-badge");
+      if (badge) {
+        badge.className = "badge badge-" + esc(overall);
+        badge.textContent = overall === "ok" ? "Ready" : overall === "fail" ? "Not Ready" : "Degraded";
+      }
+      var h2 = document.getElementById("setup-h2-count");
+      var checks = data.checks || [];
+      if (h2) h2.textContent = "Checks (" + checks.length + ")";
+      var ts = document.getElementById("setup-ts");
+      if (ts && data.checkedAt) ts.textContent = "Last run: " + tsUtc(data.checkedAt);
+      var body = document.getElementById("setup-checks-body");
+      if (!body) return;
+      if (!checks.length) {
+        body.innerHTML = '<div class="empty">No checks returned.</div>';
+        return;
+      }
+      var html = [];
+      for (var i = 0; i < checks.length; i++) {
+        var c = checks[i] || {};
+        var st = esc(c.status || "warn");
+        html.push('<div class="check ' + st + '"><div class="check-top">');
+        html.push('<span class="check-name">' + esc(c.name) + "</span>");
+        html.push('<span class="badge badge-' + st + '">' + st + "</span></div>");
+        html.push('<div class="check-detail">' + esc(c.detail) + "</div>");
+        if (c.models && c.models.length) {
+          html.push('<div class="check-model-tags">');
+          for (var j = 0; j < c.models.length; j++) {
+            html.push('<span class="pill pill-model-tag">' + esc(c.models[j]) + "</span>");
+          }
+          html.push("</div>");
+        }
+        if (c.help) {
+          html.push('<div class="check-help"><strong>Fix:</strong> ' + esc(c.help) + "</div>");
+        }
+        html.push("</div>");
+      }
+      body.innerHTML = html.join("");
+    }
+    fetch("/api/checks?_=" + Date.now())
+      .then(function (r) {
+        if (!r.ok) throw new Error("GET /api/checks failed: HTTP " + r.status);
+        return r.json();
+      })
+      .then(renderSetup)
+      .catch(function (err) {
+        var body = document.getElementById("setup-checks-body");
+        if (body) {
+          body.innerHTML =
+            '<div class="check fail"><div class="check-top"><span class="check-name">Could not load checks</span></div>' +
+            '<div class="check-detail">' + esc(String(err)) + "</div></div>";
+        }
+        var badge = document.getElementById("setup-overall-badge");
+        if (badge) {
+          badge.className = "badge badge-fail";
+          badge.textContent = "Error";
+        }
+      });
+  })();
+  </script>
+
+  {# ──────────────── Cluster Status ──────────────── #}
+  {% elif page == 'servers' %}
+
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+    <div>
+      <h2 style="font-size:20px;font-weight:800;letter-spacing:-.01em;">Cluster Status</h2>
+      <p style="font-size:13px;color:var(--muted);margin-top:4px;">
+        Live view of all known nodes from the leader at
+        <code style="font-size:12px;font-family:monospace;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:2px 8px;color:var(--sub);">{{ leader_url }}</code>.
+      </p>
+    </div>
+    <a href="/servers" class="refresh-btn" id="btn-servers-refresh" data-refresh-path="/servers"><span class="refresh-ico" aria-hidden="true">↻</span> Refresh</a>
+  </div>
+
+  {% if error %}
+  <div class="error-banner">
+    <strong>Cannot reach leader:</strong> {{ error }}
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-header">
+      <h2>Cluster</h2>
+    </div>
+    <div class="card-body" style="padding:16px 20px 14px;">
+      <div class="cluster-meta">
+        <span class="label">Cluster ID</span>
+        <code>{{ cluster.get('cluster_id') or 'unknown' }}</code>
+        <span class="label" style="margin-left:6px;">Leader</span>
+        <code>{{ (cluster.get('current_leader') or {}).get('node_id') or 'unknown' }}</code>
+        <span class="label" style="margin-left:6px;">Kafka</span>
+        <code>{{ kafka_broker }}</code>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2>Nodes ({{ nodes | length }})</h2>
+    </div>
+    <div class="card-body">
+      {% if nodes %}
+        {% for n in nodes %}
+        {# Registry workers: idle|busy|offline. Cluster state nodes: alive|dead|… #}
+        {% set st = n.get('status', 'unknown') %}
+        {% set st_ok = st in ['alive', 'idle', 'busy'] %}
+        {% set st_bad = st in ['dead', 'offline'] %}
+        <div class="node">
+          <div class="node-top">
+            <div class="node-id-row">
+              <span class="node-id">{{ n.get('id') or 'unknown' }}</span>
+              {% set nr = (n.get('node_role') or 'worker')|lower %}
+              <span class="pill pill-node-role {% if nr == 'leader' %}pill-node-role--leader{% else %}pill-node-role--worker{% endif %}">
+                {% if nr == 'leader' %}Leader{% else %}Worker{% endif %}
+              </span>
+            </div>
+            <span class="badge {% if st_ok %}badge-ok{% elif st_bad %}badge-fail{% else %}badge-warn{% endif %}">
+              {{ st }}
+            </span>
+          </div>
+          <div class="node-meta">
+            IP: <span>{{ n.get('ip') or 'n/a' }}</span>
+            &nbsp;·&nbsp; Model: <span>{{ n.get('model') or 'n/a' }}</span>
+            &nbsp;·&nbsp; RAM: <span>{% if n.get('ram_gb') is not none %}{{ n.get('ram_gb') }}{% else %}n/a{% endif %} GB</span>
+            &nbsp;·&nbsp; Tasks: <span>{{ n.get('tasksCompleted') or 0 }}</span>
+          </div>
+          {% if n.get('skills') %}
+          <div>
+            {% for s in n['skills'] %}
+            <span class="pill">{{ s }}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty">No nodes registered yet.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ──────────────── Join cluster ──────────────── #}
+  {% elif page == 'join' %}
+
+  <div class="join-hero">
+    <h2>Join cluster</h2>
+    <ol class="join-steps">
+      <li><strong>Seed / leader laptop</strong> — share a <strong>bootstrap URL</strong> (table below). Tailscale <code>100.x</code> is usually easiest for classmates.</li>
+      <li><strong>Join bundle</strong> — on the seed machine run your existing bootstrap (<code style="font-size:11px;">node_cli create-cluster</code> or <strong>Get fresh join code</strong> here). Paste the JSON on this page.</li>
+      <li><strong>This browser</strong> calls the leader’s <code style="font-size:11px;">POST /cluster/join</code> using your bootstrap URL and node identity from <code style="font-size:11px;">{{ leader_url }}/server/local-node</code>.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2>1 · Bootstrap URL (copy for others)</h2>
+    </div>
+    <div class="card-body">
+      <p class="join-hint" style="margin-top:0;">
+        Same TCP port as this UI’s leader setting (<code style="font-size:11px;">{{ leader_url }}</code>). Peers paste into <strong>Bootstrap base URL</strong> in step 2.
+      </p>
+      <table class="bootstrap-table" aria-label="Bootstrap URL candidates">
+        <tbody id="bootstrap-rows">
+          <tr><td colspan="3" class="empty">Loading addresses…</td></tr>
+        </tbody>
+      </table>
+      <p id="bootstrap-status" class="join-hint" style="margin-top:10px;min-height:1.2em;" role="status"></p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2>2 · Join code &amp; submit</h2>
+    </div>
+    <div class="card-body">
+      <button type="button" class="refresh-btn" id="mint-join-btn" style="margin-bottom:14px;">
+        <span class="refresh-ico" aria-hidden="true">✶</span> Get fresh join code from leader
+      </button>
+      <p class="join-hint" style="margin-top:-6px;margin-bottom:14px;">
+        Proxies <code style="font-size:11px;">POST {{ leader_url }}/cluster/create</code> and fills the textarea. Tokens expire — mint again if you see 401.
+      </p>
+      <form id="join-form">
+        <div class="join-field">
+          <label for="bootstrap-base">Bootstrap base URL</label>
+          <input class="join-input" type="text" id="bootstrap-base" name="bootstrap_base"
+            value="{{ leader_url }}" placeholder="http://100.x.x.x:8000" autocomplete="off" />
+          <p class="join-hint">Or leave empty to use the first <code>seed_nodes</code> entry from the join JSON.</p>
+        </div>
+        <div class="join-field">
+          <label for="join-code-json">Join code (JSON)</label>
+          <textarea class="join-textarea" id="join-code-json" name="join_code" placeholder='Paste full create response or inner join_code { "cluster_id", "join_token", "seed_nodes", … }'></textarea>
+        </div>
+        <button type="submit" class="btn-primary" id="join-submit">Join cluster</button>
+      </form>
+      <pre class="join-result" id="join-result" aria-live="polite"></pre>
+    </div>
+  </div>
+
+  {% endif %}
+
+</main>
+
+<script>
+(function () {
+  function bustCache(path) {
+    var sep = path.indexOf("?") >= 0 ? "&" : "?";
+    return path + sep + "_=" + Date.now();
+  }
+  function wireRefresh(link) {
+    if (!link) return;
+    var base = link.getAttribute("data-refresh-path") || link.getAttribute("href") || "/";
+    link.addEventListener("click", function (e) {
+      e.preventDefault();
+      link.classList.add("is-busy");
+      requestAnimationFrame(function () {
+        setTimeout(function () {
+          window.location.assign(bustCache(base));
+        }, 90);
+      });
+    });
+  }
+  wireRefresh(document.getElementById("btn-setup-rerun"));
+  wireRefresh(document.getElementById("btn-servers-refresh"));
+})();
+</script>
+{% if page == 'join' %}
+<script>
+(function () {
+  var form = document.getElementById("join-form");
+  var out = document.getElementById("join-result");
+  var ta = document.getElementById("join-code-json");
+  var bootstrapIn = document.getElementById("bootstrap-base");
+  var bootStatus = document.getElementById("bootstrap-status");
+  var bootRows = document.getElementById("bootstrap-rows");
+
+  function setBootStatus(msg, ok) {
+    if (!bootStatus) return;
+    bootStatus.textContent = msg || "";
+    if (msg && ok === false) bootStatus.style.color = "var(--red)";
+    else if (msg && ok === true) bootStatus.style.color = "var(--teal)";
+    else bootStatus.style.color = "var(--muted)";
+  }
+
+  function copyToClipboard(text) {
+    if (!text) return Promise.reject(new Error("empty"));
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta2 = document.createElement("textarea");
+      ta2.value = text;
+      ta2.style.position = "fixed";
+      ta2.style.left = "-9999px";
+      document.body.appendChild(ta2);
+      ta2.select();
+      try {
+        if (document.execCommand("copy")) resolve();
+        else reject(new Error("execCommand failed"));
+      } catch (e) {
+        reject(e);
+      } finally {
+        document.body.removeChild(ta2);
+      }
+    });
+  }
+
+  function renderBootstrapRows(payload) {
+    if (!bootRows) return;
+    bootRows.innerHTML = "";
+    var list = (payload && payload.candidates) || [];
+    if (!list.length) {
+      var tr0 = document.createElement("tr");
+      var td0 = document.createElement("td");
+      td0.colSpan = 3;
+      td0.className = "empty";
+      td0.textContent = "No bootstrap URLs returned.";
+      tr0.appendChild(td0);
+      bootRows.appendChild(tr0);
+      return;
+    }
+    list.forEach(function (row) {
+      var tr = document.createElement("tr");
+      var tdL = document.createElement("td");
+      tdL.className = "bootstrap-label";
+      tdL.textContent = row.label || "";
+      var tdU = document.createElement("td");
+      var code = document.createElement("code");
+      code.className = "bootstrap-url";
+      code.textContent = row.url || "";
+      tdU.appendChild(code);
+      var tdA = document.createElement("td");
+      tdA.className = "bootstrap-actions";
+      var bCopy = document.createElement("button");
+      bCopy.type = "button";
+      bCopy.className = "btn-inline btn-copy";
+      bCopy.textContent = "Copy";
+      bCopy.setAttribute("data-copy", row.url || "");
+      var bUse = document.createElement("button");
+      bUse.type = "button";
+      bUse.className = "btn-inline btn-use";
+      bUse.textContent = "Use";
+      bUse.setAttribute("data-use", row.url || "");
+      tdA.appendChild(bCopy);
+      tdA.appendChild(bUse);
+      tr.appendChild(tdL);
+      tr.appendChild(tdU);
+      tr.appendChild(tdA);
+      bootRows.appendChild(tr);
+    });
+  }
+
+  if (bootRows) {
+    bootRows.addEventListener("click", function (ev) {
+      var t = ev.target;
+      if (!t) return;
+      // Clicks on button labels often hit a Text node, which has no .closest — use parent element.
+      var origin = t.nodeType === 1 ? t : t.parentElement;
+      if (!origin || typeof origin.closest !== "function") return;
+      var btn = origin.closest("button");
+      if (!btn) return;
+      var c = btn.getAttribute("data-copy");
+      if (c) {
+        copyToClipboard(c)
+          .then(function () {
+            setBootStatus("Copied to clipboard.", true);
+          })
+          .catch(function () {
+            setBootStatus("Copy failed — select the URL in the table and copy manually.", false);
+          });
+        return;
+      }
+      var u = btn.getAttribute("data-use");
+      if (u && bootstrapIn) {
+        bootstrapIn.value = u;
+        setBootStatus("Bootstrap base URL updated.", true);
+      }
+    });
+  }
+
+  fetch("/api/bootstrap-hints?_=" + Date.now())
+    .then(function (r) {
+      return r.json();
+    })
+    .then(function (data) {
+      renderBootstrapRows(data);
+    })
+    .catch(function () {
+      if (!bootRows) return;
+      bootRows.innerHTML = "";
+      var trE = document.createElement("tr");
+      var tdE = document.createElement("td");
+      tdE.colSpan = 3;
+      tdE.className = "empty";
+      tdE.textContent = "Could not load bootstrap hints.";
+      trE.appendChild(tdE);
+      bootRows.appendChild(trE);
+    });
+
+  if (!form || !out || !ta) return;
+  var mint = document.getElementById("mint-join-btn");
+  if (mint) {
+    mint.addEventListener("click", function () {
+      mint.disabled = true;
+      out.textContent = "";
+      out.style.color = "var(--sub)";
+      fetch("/api/mint-join-code", { method: "POST" })
+        .then(function (r) {
+          return r.text().then(function (text) {
+            var data;
+            try {
+              data = JSON.parse(text || "{}");
+            } catch (e2) {
+              data = { success: false, error: "Non-JSON from /api/mint-join-code", raw: (text || "").slice(0, 500) };
+            }
+            return { ok: r.ok, data: data };
+          });
+        })
+        .then(function (x) {
+          out.textContent = JSON.stringify(x.data, null, 2);
+          if (x.data && x.data.success && x.data.join_code) {
+            ta.value = JSON.stringify(x.data, null, 2);
+            out.style.color = "var(--teal)";
+          } else {
+            out.style.color = "var(--red)";
+          }
+        })
+        .catch(function (err) {
+          out.style.color = "var(--red)";
+          out.textContent = String(err);
+        })
+        .then(function () {
+          mint.disabled = false;
+        });
+    });
+  }
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var btn = document.getElementById("join-submit");
+    if (!btn) return;
+    btn.disabled = true;
+    out.textContent = "";
+    out.style.color = "var(--sub)";
+    var jcText = document.getElementById("join-code-json").value.trim();
+    var jc;
+    try {
+      jc = JSON.parse(jcText || "{}");
+    } catch (err) {
+      out.style.color = "var(--red)";
+      out.textContent = "Join code is not valid JSON: " + err;
+      btn.disabled = false;
+      return;
+    }
+    fetch("/api/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bootstrap_base: document.getElementById("bootstrap-base").value.trim(),
+        join_code: jc,
+      }),
+    })
+      .then(function (r) {
+        return r.text().then(function (text) {
+          var data;
+          try {
+            data = JSON.parse(text || "{}");
+          } catch (e2) {
+            data = {
+              success: false,
+              error: "Response was not JSON (HTTP " + r.status + ")",
+              raw: (text || "").slice(0, 800),
+            };
+          }
+          return { ok: r.ok, data: data };
+        });
+      })
+      .then(function (x) {
+        out.textContent = JSON.stringify(x.data, null, 2);
+        out.style.color = x.data && x.data.success ? "var(--teal)" : "var(--red)";
+      })
+      .catch(function (err) {
+        out.style.color = "var(--red)";
+        out.textContent = String(err);
+      })
+      .then(function () {
+        btn.disabled = false;
+      });
+  });
+})();
+</script>
+{% endif %}
+
+</body>
+</html>

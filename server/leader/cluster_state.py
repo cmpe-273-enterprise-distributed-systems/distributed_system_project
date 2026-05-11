@@ -142,11 +142,19 @@ def create_cluster(this_node: Dict[str, Any]) -> ClusterState:
     return _STATE
 
 
-def generate_join_code(expires_in_seconds: int = 600) -> Dict[str, Any]:
+def generate_join_code(expires_in_seconds: Optional[int] = None) -> Dict[str, Any]:
     """
     Join code is a *first contact* token. It's not DNS; it just tells a new node where to call.
+
+    TTL: env JOIN_TOKEN_EXPIRES_SECONDS (default 86400 = 24h). Older bundles used 600s and
+    expired quickly during UI testing.
     """
     global _STATE
+    if expires_in_seconds is None:
+        try:
+            expires_in_seconds = int(os.getenv("JOIN_TOKEN_EXPIRES_SECONDS", "86400"))
+        except ValueError:
+            expires_in_seconds = 86400
     token = secrets.token_urlsafe(24)
     _STATE.join_token = token
     _STATE.join_token_expires_at = _now() + int(expires_in_seconds)
@@ -160,13 +168,24 @@ def generate_join_code(expires_in_seconds: int = 600) -> Dict[str, Any]:
     }
 
 
-def validate_join_token(token: str) -> bool:
+def join_token_issue(provided: str) -> Optional[str]:
+    """
+    None if the token is valid. Otherwise a short machine-readable reason
+    (for HTTP 401 detail — do not echo the expected secret).
+    """
     global _STATE
+    got = (provided or "").strip()
     if not _STATE.join_token or not _STATE.join_token_expires_at:
-        return False
-    if token != _STATE.join_token:
-        return False
-    return _now() <= int(_STATE.join_token_expires_at)
+        return "no_active_join_token"
+    if got != _STATE.join_token:
+        return "join_token_mismatch"
+    if _now() > int(_STATE.join_token_expires_at):
+        return "join_token_expired"
+    return None
+
+
+def validate_join_token(token: str) -> bool:
+    return join_token_issue(token) is None
 
 
 def add_or_update_node(node: Dict[str, Any]) -> Dict[str, Any]:

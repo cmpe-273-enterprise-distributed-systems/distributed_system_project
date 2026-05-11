@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -24,7 +24,7 @@ from cluster_state import (
     merge_cluster_state,
     save_cluster_state,
     update_heartbeat,
-    validate_join_token,
+    join_token_issue,
 )
 from database import (
     _hash,
@@ -43,9 +43,40 @@ from leader_monitor import LeaderMonitor
 from node_config import load_or_create_node_config
 from registry import Registry
 from tailscale_utils import get_advertise_host
+from system_checks import run_all_requirements_checks
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 TASK_TIMEOUT = int(os.getenv("TASK_TIMEOUT", "60"))
+# Browser dashboard (server/ui) — shown when someone opens /join or /servers on the leader by mistake.
+_SERVER_UI_BASE = os.getenv("SERVER_UI_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
+
+
+def _leader_only_browser_hint(*, path: str, title: str, leader_base: str) -> HTMLResponse:
+    ui = _SERVER_UI_BASE
+    html = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>{title}</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 2rem; max-width: 42rem; line-height: 1.5; color: #1a1a1a; }}
+  code {{ background: #f0f0f0; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.9em; }}
+  a {{ color: #0b57d0; }}
+</style></head><body>
+<h1>{title}</h1>
+<p>You opened <code>{path}</code> on this machine&rsquo;s <strong>leader API</strong> (FastAPI). That service exposes JSON routes such as
+<code>/health</code>, <code>/cluster/join</code> (POST), etc. It does <strong>not</strong> serve the HTML dashboard.</p>
+<p>The <strong>Server Node UI</strong> is a separate process. Start it from the repo, pointing <code>--leader</code> at this API (including port):</p>
+<pre style="background:#f6f8fa;padding:12px;border-radius:8px;overflow:auto">cd server/ui
+python app.py --port 8001 --leader {leader_base}</pre>
+<p>Then open the matching page in the UI (default base <a href="{ui}">{ui}</a>):</p>
+<ul>
+  <li><a href="{ui}/join">{ui}/join</a> &mdash; join cluster</li>
+  <li><a href="{ui}/servers">{ui}/servers</a> &mdash; cluster status</li>
+  <li><a href="{ui}/">{ui}/</a> &mdash; setup checks</li>
+</ul>
+<p>You can set <code>SERVER_UI_BASE_URL</code> if the UI runs somewhere other than <code>{ui}</code>.</p>
+</body></html>"""
+    return HTMLResponse(content=html)
+
 
 registry = Registry()
 producer = TaskProducer(KAFKA_BROKER)
@@ -58,6 +89,11 @@ async def lifespan(app: FastAPI):
     await init_db()
     result_consumer.start(asyncio.get_event_loop())
     asyncio.create_task(registry.check_timeouts())
+
+    # Hydrate cluster state from disk before we touch known_nodes / save.
+    # Otherwise join_token, cluster_id, and peers from cluster_state.yaml are
+    # dropped on every restart when save_cluster_state() runs below.
+    load_cluster_state()
 
     cfg = load_or_create_node_config()
     host = get_advertise_host()
@@ -91,6 +127,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/join", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/join/", response_class=HTMLResponse, include_in_schema=False)
+async def browser_hint_join(request: Request):
+    """Avoid JSON 404 when the leader is opened on the same port users expect for the UI."""
+    leader_base = str(request.base_url).rstrip("/")
+    return _leader_only_browser_hint(path="/join", title="Wrong service — use Server Node UI for /join", leader_base=leader_base)
+
+
+@app.get("/servers", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/servers/", response_class=HTMLResponse, include_in_schema=False)
+async def browser_hint_servers(request: Request):
+    leader_base = str(request.base_url).rstrip("/")
+    return _leader_only_browser_hint(path="/servers", title="Wrong service — use Server Node UI for /servers", leader_base=leader_base)
 
 
 # ── Request models ────────────────────────────────────────────────────────────
@@ -159,6 +210,107 @@ class SyncRequest(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── Server / system readiness checks ──────────────────────────────────────────
+
+@app.get("/server/requirements")
+async def server_requirements():
+    """
+    Returns local machine readiness checks (Tailscale + Ollama + Kafka + Cassandra).
+    Intended for the server UI role.
+    """
+    return await run_all_requirements_checks()
+
+
+def _status_row_from_cluster_node(n: Dict[str, Any], *, node_role: str) -> Dict[str, Any]:
+    models = n.get("models") or []
+    first_model = models[0] if isinstance(models, list) and models else None
+    return {
+        "id": n.get("node_id"),
+        "ip": n.get("host"),
+        "status": n.get("status", "alive"),
+        "model": n.get("model") or first_model,
+        "skills": n.get("skills") or [],
+        "tasksCompleted": int(n.get("tasks_completed") or 0),
+        "lastSeen": int(n.get("last_heartbeat") or 0) * 1000,
+        "ram_gb": n.get("ram_gb"),
+        "node_role": node_role,
+    }
+
+
+@app.get("/server/status")
+async def server_status():
+    """
+    Returns cluster/server status visible from the leader.
+    Each node includes node_role: "leader" | "worker" (elected leader vs task workers).
+    """
+    cluster = get_cluster_status()
+    leader_obj = cluster.get("current_leader") or {}
+    leader_id = (leader_obj.get("node_id") or "").strip() or None
+
+    nodes_from_registry = await registry.get_all()
+    nodes_list: List[Dict[str, Any]] = []
+    for n in nodes_from_registry:
+        node_role = "leader" if leader_id and n.node_id == leader_id else "worker"
+        nodes_list.append(
+            {
+                "id": n.node_id,
+                "ip": n.ip,
+                "status": n.status,
+                "model": n.model,
+                "skills": n.skills,
+                "tasksCompleted": n.tasks_completed,
+                "lastSeen": int(n.last_seen * 1000),
+                "ram_gb": n.ram_gb,
+                "node_role": node_role,
+            }
+        )
+
+    # Show elected leader even when it does not appear in the worker registry.
+    if leader_id and not any(r.get("id") == leader_id for r in nodes_list):
+        nodes_list.insert(0, _status_row_from_cluster_node(leader_obj, node_role="leader"))
+
+    # Some flows populate cluster_state (known_nodes) but not registry.
+    if not nodes_list:
+        cluster_known = cluster.get("known_nodes") or []
+        for n in cluster_known:
+            if not n.get("node_id"):
+                continue
+            nid = n.get("node_id")
+            nr = "leader" if leader_id and nid == leader_id else "worker"
+            nodes_list.append(_status_row_from_cluster_node(n, node_role=nr))
+
+    nodes_list.sort(
+        key=lambda r: (0 if r.get("node_role") == "leader" else 1, str(r.get("id") or "")),
+    )
+
+    return {"cluster": cluster, "nodes": nodes_list, "kafka_broker": KAFKA_BROKER}
+
+
+@app.get("/server/local-node")
+async def server_local_node():
+    """
+    Identity of this running node (leader process) for building POST /cluster/join bodies.
+    """
+    cfg = load_or_create_node_config()
+    host = get_advertise_host()
+    port = int(cfg.get("port") or 8000)
+    now = int(time.time())
+    return {
+        "node_id": cfg["node_id"],
+        "role": cfg.get("role") or "both",
+        "priority": int(cfg.get("priority") or 100),
+        "host": host,
+        "port": port,
+        "url": f"http://{host}:{port}",
+        "ram_gb": None,
+        "models": [],
+        "skills": [],
+        "status": "alive",
+        "last_heartbeat": now,
+        "tasks_completed": 0,
+    }
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -306,6 +458,7 @@ async def heartbeat(body: HeartbeatBody):
 
 @app.post("/cluster/create")
 async def cluster_create(req: ClusterCreateRequest):
+    load_cluster_state()
     cfg = load_or_create_node_config(role=req.role, priority=req.priority, port=req.port)
     host = get_advertise_host()
     port = int(cfg.get("port") or req.port)
@@ -342,8 +495,16 @@ async def cluster_join(req: JoinClusterRequest):
     st = load_cluster_state()
     if st.cluster_id and req.cluster_id != st.cluster_id:
         raise HTTPException(400, "Cluster ID mismatch")
-    if not validate_join_token(req.join_token):
-        raise HTTPException(401, "Invalid or expired join token")
+    issue = join_token_issue(req.join_token)
+    if issue:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": issue,
+                "message": "Join token rejected (wrong, expired, or server has no token).",
+                "token_expires_at_epoch": st.join_token_expires_at,
+            },
+        )
     add_or_update_node(req.node.model_dump())
     elect_leader()
     save_cluster_state()
