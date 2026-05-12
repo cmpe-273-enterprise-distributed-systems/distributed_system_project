@@ -51,6 +51,14 @@ class Registry:
         async with self._lock:
             return list(self._nodes.values())
 
+    async def eligible(self, min_ram_gb: int) -> list[NodeInfo]:
+        """Alive workers that meet the RAM threshold. Used by the dispatch preflight."""
+        async with self._lock:
+            return [
+                n for n in self._nodes.values()
+                if n.status != "offline" and n.ram_gb >= min_ram_gb
+            ]
+
     async def check_timeouts(self):
         """Background loop: marks nodes offline when heartbeats stop arriving."""
         while True:

@@ -1,8 +1,11 @@
 """
 Kafka integration for the leader node.
 
-TaskProducer  — publishes tasks to the appropriate task topic based on prompt
-                analysis. Topics: tasks-high-ram, tasks-low-ram, tasks-general.
+TaskProducer  — publishes tasks to a RAM tier topic chosen by a token-count
+                heuristic (or an explicit `tier` override on /ask). Walks
+                TIER_ORDER downward when the requested tier has no eligible
+                workers; raises NoEligibleWorker if no tier has any.
+                Topics: tasks-high-ram, tasks-low-ram, tasks-general.
 ResultConsumer — runs a KafkaConsumer in a background thread, resolves
                  asyncio.Events when completed-task results arrive.
 
@@ -20,37 +23,27 @@ from typing import Any
 
 from kafka import KafkaConsumer, KafkaProducer
 
-TOPIC_HIGH_RAM = "tasks-high-ram"
-TOPIC_LOW_RAM = "tasks-low-ram"
-TOPIC_GENERAL = "tasks-general"
+# RAM tier thresholds (GB). Must stay in sync with server/worker/kafka_client.py.
+TIER_RAM_GB = {"high-ram": 16, "low-ram": 8, "general": 0}
+# Ordered most-capable → least-capable. Used as the downgrade walk order.
+TIER_ORDER = ["high-ram", "low-ram", "general"]
 
-# TODO(mock): These keyword sets are a placeholder for real dispatch logic.
-# A proper implementation should estimate token count, inspect required model
-# size/context window, or use request metadata set by the client. The current
-# keyword approach over-routes to tasks-high-ram (e.g. any prompt containing
-# "write" or "code") and has no fallback when no high-RAM worker is available.
-_HIGH_RAM_KEYWORDS = {
-    "analyze", "analyse", "summarize", "summarise", "generate", "write",
-    "code", "program", "refactor", "implement", "essay", "compare",
-    "explain in detail", "step by step", "in depth",
-}
-
-# TODO(mock): Likewise, these low-RAM keywords are illustrative only.
-_LOW_RAM_KEYWORDS = {
-    "what is", "what are", "define", "who is", "when was", "how many",
-    "yes or no", "is it", "true or false", "list",
-}
+# Heuristic tier classifier — len(prompt) // 4 ≈ token count.
+_HIGH_RAM_TOKEN_FLOOR = 2000
+_LOW_RAM_TOKEN_FLOOR = 500
 
 
-def _select_topic(prompt: str) -> str:
-    # TODO(mock): Replace with real routing logic — token-count estimate, model
-    # metadata, or an explicit tier field on the /ask request body.
-    lowered = prompt.lower()
-    if any(kw in lowered for kw in _HIGH_RAM_KEYWORDS):
-        return TOPIC_HIGH_RAM
-    if any(kw in lowered for kw in _LOW_RAM_KEYWORDS):
-        return TOPIC_LOW_RAM
-    return TOPIC_GENERAL
+class NoEligibleWorker(Exception):
+    """Raised by TaskProducer.publish when no tier has any online worker."""
+
+
+def _classify_tier(prompt: str) -> str:
+    estimated_tokens = len(prompt) // 4
+    if estimated_tokens > _HIGH_RAM_TOKEN_FLOOR:
+        return "high-ram"
+    if estimated_tokens > _LOW_RAM_TOKEN_FLOOR:
+        return "low-ram"
+    return "general"
 
 
 class TaskProducer:
@@ -60,9 +53,37 @@ class TaskProducer:
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         )
 
-    def publish(self, request_id: str, prompt: str, user_id: str, user_name: str) -> str:
-        """Publishes the task to the appropriate topic. Returns the chosen topic name."""
-        topic = _select_topic(prompt)
+    async def publish(
+        self,
+        request_id: str,
+        prompt: str,
+        user_id: str,
+        user_name: str,
+        *,
+        tier_override: str | None,
+        registry,
+    ) -> str:
+        """
+        Publish to the chosen tier topic. Returns the chosen tier.
+
+        1. Resolve tier (override if valid, else token heuristic).
+        2. Walk TIER_ORDER starting at the resolved tier. First tier with at
+           least one eligible (RAM-meeting, non-offline) worker wins.
+        3. If no tier has any eligible worker, raise NoEligibleWorker.
+        """
+        requested_tier = tier_override if tier_override in TIER_RAM_GB else _classify_tier(prompt)
+        start_idx = TIER_ORDER.index(requested_tier)
+
+        chosen_tier: str | None = None
+        for tier in TIER_ORDER[start_idx:]:
+            if await registry.eligible(TIER_RAM_GB[tier]):
+                chosen_tier = tier
+                break
+
+        if chosen_tier is None:
+            raise NoEligibleWorker("No worker is online to handle this task.")
+
+        topic = f"tasks-{chosen_tier}"
         self._producer.send(topic, {
             "request_id": request_id,
             "prompt": prompt,
@@ -70,9 +91,11 @@ class TaskProducer:
             "user_name": user_name,
             "timestamp": int(time.time() * 1000),
             "topic": topic,
+            "tier": chosen_tier,
+            "requested_tier": requested_tier,
         })
         self._producer.flush()
-        return topic
+        return chosen_tier
 
 
 class ResultConsumer:

@@ -2,13 +2,14 @@ import json
 
 from kafka import KafkaConsumer, KafkaProducer
 
-# TODO(mock): This RAM threshold is a placeholder. A proper implementation
-# should derive topic eligibility from the worker's registered skill set and
-# actual available memory at task-acceptance time, not a fixed boot-time value.
-HIGH_RAM_THRESHOLD_GB = 12
+# RAM tier thresholds (GB). Must stay in sync with server/leader/kafka_client.py.
+TIER_RAM_GB = {"high-ram": 16, "low-ram": 8, "general": 0}
+TIER_ORDER = ["high-ram", "low-ram", "general"]
 
-ALL_TASK_TOPICS = ("tasks-high-ram", "tasks-low-ram", "tasks-general")
-LOW_RAM_TOPICS = ("tasks-low-ram", "tasks-general")
+
+def _topics_for_ram(ram_gb: float) -> list[str]:
+    """Every tier topic this worker meets by RAM. 'general' is always included."""
+    return [f"tasks-{t}" for t in TIER_ORDER if ram_gb >= TIER_RAM_GB[t]]
 
 
 class WorkerKafka:
@@ -16,11 +17,9 @@ class WorkerKafka:
     Consumer + producer pair for a single worker node.
 
     All workers share the consumer group 'workers', so Kafka distributes
-    each task to exactly one worker — no duplicate processing.
-
-    TODO(mock): Topic subscription is currently determined by a fixed RAM
-    threshold at startup. A proper implementation would subscribe based on
-    registered skills and dynamically adjust if RAM availability changes.
+    each task to exactly one worker — no duplicate processing. A worker
+    subscribes to every tasks-{tier} whose RAM threshold it meets, so a big
+    worker can drain low-tier topics when no smaller worker is around.
 
     consumer_timeout_ms=1000 makes the consumer iterator exit after 1 s of
     silence, allowing the outer loop in worker.py to check the shutdown flag
@@ -36,8 +35,7 @@ class WorkerKafka:
         self._node_id = node_id
         self._ram_gb = ram_gb
         self._bootstrap = bootstrap_servers
-        # TODO(mock): topic selection by RAM threshold — see module comment above
-        self._topics = ALL_TASK_TOPICS if ram_gb >= HIGH_RAM_THRESHOLD_GB else LOW_RAM_TOPICS
+        self._topics = _topics_for_ram(ram_gb)
         self._pending_broker: str | None = None
         self._consumer = self._make_consumer(bootstrap_servers)
         self._producer = self._make_producer(bootstrap_servers)
@@ -76,6 +74,10 @@ class WorkerKafka:
     @property
     def bootstrap_servers(self) -> str:
         return self._bootstrap
+
+    @property
+    def topics(self) -> list[str]:
+        return list(self._topics)
 
     def request_reconnect(self, new_bootstrap_servers: str):
         """Thread-safe: signal the main thread to reconnect to a new broker."""
