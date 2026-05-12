@@ -38,7 +38,7 @@ from database import (
     update_user_role,
 )
 from discovery import DiscoveryClient
-from kafka_client import ResultConsumer, TaskProducer
+from kafka_client import NoEligibleWorker, ResultConsumer, TaskProducer
 from leader_monitor import LeaderMonitor
 from node_config import load_or_create_node_config
 from registry import Registry
@@ -160,6 +160,7 @@ class AskBody(BaseModel):
     prompt: str
     user_id: str = ""
     user_name: str = "anonymous"
+    tier: Optional[str] = None
 
 class RegisterBody(BaseModel):
     node_id: str
@@ -339,7 +340,14 @@ async def ask(body: AskBody):
 
     # Register the event BEFORE publishing so the consumer thread can't race ahead
     event = result_consumer.register(request_id)
-    producer.publish(request_id, body.prompt, body.user_id, body.user_name)
+    try:
+        chosen_tier = await producer.publish(
+            request_id, body.prompt, body.user_id, body.user_name,
+            tier_override=body.tier, registry=registry,
+        )
+    except NoEligibleWorker as e:
+        result_consumer.cancel(request_id)
+        raise HTTPException(503, str(e))
 
     try:
         await asyncio.wait_for(event.wait(), timeout=TASK_TIMEOUT)
@@ -367,6 +375,7 @@ async def ask(body: AskBody):
         "response": result.get("response", ""),
         "worker": worker_id,
         "duration": f"{duration_ms / 1000:.1f}s",
+        "tier": chosen_tier,
     }
 
 
@@ -381,11 +390,19 @@ async def ask_stream(body: AskBody):
 
     # Register BEFORE publishing so the consumer thread can't race ahead.
     event = result_consumer.register(request_id)
-    producer.publish(request_id, body.prompt, body.user_id, body.user_name)
+    try:
+        chosen_tier = await producer.publish(
+            request_id, body.prompt, body.user_id, body.user_name,
+            tier_override=body.tier, registry=registry,
+        )
+    except NoEligibleWorker as e:
+        result_consumer.cancel(request_id)
+        raise HTTPException(503, str(e))
 
     async def _gen():
         # Initial event
         yield "event: status\ndata: queued\n\n"
+        yield f"event: routing\ndata: tier={chosen_tier}\n\n"
 
         start = time.time()
         while True:
@@ -409,7 +426,7 @@ async def ask_stream(body: AskBody):
             # SSE data must not contain raw newlines unless split across multiple data: lines.
             data = response.replace("\n", "\\n")
             yield f"event: result\ndata: {data}\n\n"
-            yield f"event: meta\ndata: worker={worker_id};duration_ms={duration_ms}\n\n"
+            yield f"event: meta\ndata: worker={worker_id};duration_ms={duration_ms};tier={chosen_tier}\n\n"
             return
 
     return StreamingResponse(_gen(), media_type="text/event-stream")

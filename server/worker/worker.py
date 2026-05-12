@@ -108,6 +108,12 @@ _tasks_completed = 0
 _current_status = "idle"
 _shutdown = threading.Event()
 
+# Resolved once at startup (first register() call) and reused for every task.
+# Reading MODEL directly in process_task was a bug: registration reported the
+# first detected Ollama tag while execution silently fell back to whatever
+# MODEL happened to be, even when those didn't match.
+_effective_model: str = MODEL
+
 
 # ── Registration ──────────────────────────────────────────────────────────────
 
@@ -119,11 +125,12 @@ def register() -> str:
     as one publishes itself, and a worker rejoining after a failover will target
     the new leader.
     """
+    global _effective_model
     detected_models = get_ollama_models()
-    effective_model = detected_models[0] if detected_models else MODEL
+    _effective_model = detected_models[0] if detected_models else MODEL
     effective_skills = get_skills() or SKILLS
 
-    print(f"[{NODE_ID}] RAM: {RAM_GB} GB  Model: {effective_model}  Skills: {effective_skills}")
+    print(f"[{NODE_ID}] RAM: {RAM_GB} GB  Model: {_effective_model}  Skills: {effective_skills}")
 
     while not _shutdown.is_set():
         if discovered := resolve_leader_from_discovery():
@@ -132,7 +139,7 @@ def register() -> str:
         try:
             r = httpx.post(
                 f"{url}/register",
-                json={"node_id": NODE_ID, "ram_gb": RAM_GB, "model": effective_model, "skills": effective_skills},
+                json={"node_id": NODE_ID, "ram_gb": RAM_GB, "model": _effective_model, "skills": effective_skills},
                 timeout=5,
             )
             r.raise_for_status()
@@ -197,7 +204,7 @@ def process_task(kafka: WorkerKafka, task: dict):
     _current_status = "busy"
     start = time.time()
     try:
-        response = generate(MODEL, prompt)
+        response = generate(_effective_model, prompt)
         duration_ms = int((time.time() - start) * 1000)
         kafka.publish_result(request_id, response, duration_ms)
         _tasks_completed += 1
@@ -217,6 +224,7 @@ def main():
 
     broker = register()
     kafka = WorkerKafka(broker, NODE_ID, RAM_GB)
+    print(f"[{NODE_ID}] Subscribed to topics: {kafka.topics}")
 
     # Heartbeat thread needs the kafka reference so it can signal broker changes.
     hb = threading.Thread(target=heartbeat_loop, args=(kafka,), daemon=True, name="heartbeat")
