@@ -238,6 +238,10 @@ def main():
                 if _shutdown.is_set():
                     break
                 process_task(kafka, task)
+                # Commit only after process_task returns. If the worker crashes
+                # mid-task, the offset stays uncommitted and Kafka redelivers
+                # to another worker on rebalance.
+                kafka.commit()
             kafka.apply_reconnect_if_needed()
         except Exception as e:
             print(f"[{NODE_ID}] Consumer error: {e}. Retrying in 2 s…")

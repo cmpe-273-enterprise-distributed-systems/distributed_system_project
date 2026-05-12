@@ -50,8 +50,18 @@ class WorkerKafka:
             bootstrap_servers=bootstrap_servers,
             group_id="workers",
             value_deserializer=lambda b: json.loads(b.decode("utf-8")),
-            auto_offset_reset="latest",
-            enable_auto_commit=True,
+            # earliest: if a partition gets reassigned after a worker death,
+            # start from the last committed offset so the in-flight task is
+            # redelivered instead of skipped.
+            auto_offset_reset="earliest",
+            # Manual commit only after publish_result returns. If the worker
+            # dies mid-task, the offset stays uncommitted and Kafka rebalances
+            # the partition to another worker, which then receives the task.
+            enable_auto_commit=False,
+            # Ollama generations can be slow. Without this, Kafka would assume
+            # the worker is hung and trigger a rebalance, causing duplicate
+            # processing of the in-flight task.
+            max_poll_interval_ms=1_800_000,
             consumer_timeout_ms=1000,
         )
 
@@ -90,6 +100,14 @@ class WorkerKafka:
         """Yield task dicts. Exits after ~1 s of no messages (consumer_timeout_ms)."""
         for msg in self._consumer:
             yield msg.value
+
+    def commit(self):
+        """
+        Commit the offset of the most recently yielded message. Call only after
+        publish_result has flushed successfully — committing earlier means a
+        crash before the result is published would lose the task.
+        """
+        self._consumer.commit()
 
     def publish_result(
         self,
