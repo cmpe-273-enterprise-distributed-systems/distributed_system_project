@@ -397,9 +397,9 @@ def create_app(settings: UiSettings) -> FastAPI:
         # can take 30s+ and the browser would show a blank page until HTML is sent.
         # Checks load via GET /api/checks after paint (see layout.html).
         return templates.TemplateResponse(
+            request,
             "layout.html",
             {
-                "request": request,
                 "page": "setup",
                 "leader_url": leader_url,
             },
@@ -419,9 +419,9 @@ def create_app(settings: UiSettings) -> FastAPI:
             error = str(exc)
 
         return templates.TemplateResponse(
+            request,
             "layout.html",
             {
-                "request": request,
                 "page": "servers",
                 "cluster": data.get("cluster") or {},
                 "nodes": data.get("nodes") or [],
@@ -436,9 +436,9 @@ def create_app(settings: UiSettings) -> FastAPI:
     @app.get("/join/", response_class=HTMLResponse)
     async def page_join(request: Request):
         return templates.TemplateResponse(
+            request,
             "layout.html",
             {
-                "request": request,
                 "page": "join",
                 "leader_url": leader_url,
             },
