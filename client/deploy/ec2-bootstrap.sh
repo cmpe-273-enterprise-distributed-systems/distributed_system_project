@@ -4,7 +4,8 @@
 # Prereqs on the instance:
 #   1. Security group: inbound TCP 80 (and 443 if you add TLS later) from your clients.
 #   2. Build the app with production API env vars (CRA bakes these at build time):
-#        export REACT_APP_DISCOVERY_URL="https://your-discovery-endpoint"
+#        export REACT_APP_UPSTASH_REDIS_REST_URL="https://....upstash.io"
+#        export REACT_APP_UPSTASH_REDIS_REST_READ_ONLY_TOKEN="..."
 #        export REACT_APP_LEADER_FALLBACK_URL="http://YOUR_LEADER_PUBLIC_IP:8000"
 #        npm ci && npm run build
 #   3. Copy the build folder to the instance, e.g.:

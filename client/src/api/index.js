@@ -161,8 +161,42 @@ api.interceptors.response.use(
 
 /* ── Auth ─────────────────────────────────── */
 
+// Offline / demo: same accounts as LoginScreen hint — no leader required.
+const _DUMMY_LOGINS = [
+  {
+    email: 'admin@cluster.local',
+    password: 'admin',
+    user: {
+      id: '00000000-0000-4000-8000-000000000001',
+      name: 'Admin',
+      email: 'admin@cluster.local',
+      role: 'admin',
+    },
+  },
+  {
+    email: 'user@cluster.local',
+    password: 'password',
+    user: {
+      id: '00000000-0000-4000-8000-000000000002',
+      name: 'User',
+      email: 'user@cluster.local',
+      role: 'client',
+    },
+  },
+];
+
+function _tryDummyLogin(email, password) {
+  const e = String(email || '').trim().toLowerCase();
+  const p = String(password || '');
+  const row = _DUMMY_LOGINS.find((x) => x.email === e && x.password === p);
+  return row ? { ...row.user } : null;
+}
+
 // Real: POST /auth/login  { email, password }
 export async function login(email, password) {
+  const dummy = _tryDummyLogin(email, password);
+  if (dummy) return dummy;
+
   try {
     const res = await api.post(`/auth/login`, { email, password });
     return res.data;
