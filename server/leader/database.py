@@ -21,6 +21,7 @@ match the previous module so main.py needs no changes.
 """
 
 import asyncio
+import glob
 import hashlib
 import os
 import uuid
@@ -62,6 +63,41 @@ _session: Optional[Session] = None
 _prepared: dict[str, PreparedStatement] = {}
 
 
+def _resolve_bundle_path(configured: str) -> str:
+    """Locate the Astra Secure Connect Bundle, tolerating Astra's varying filenames.
+
+    Astra has renamed downloads over time (e.g. `secure-connect-foo.zip` →
+    `secure-connect-foo-db.zip`), and teammates may have differently-named
+    bundles. To avoid breaking every time the suffix changes, accept any of:
+
+      1. An exact file path that exists — use it verbatim.
+      2. A directory — pick the single `secure-connect-*.zip` inside it.
+      3. A non-existent path — glob `secure-connect-*.zip` in its parent
+         directory and pick if exactly one match exists.
+
+    Ambiguous (>1 match) or empty cases raise with a clear list so the user
+    knows what to set `ASTRA_BUNDLE_PATH` to explicitly.
+    """
+    if os.path.isfile(configured):
+        return configured
+    search_dir = configured if os.path.isdir(configured) else (os.path.dirname(configured) or ".")
+    matches = sorted(glob.glob(os.path.join(search_dir, "secure-connect-*.zip")))
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise RuntimeError(
+            f"ASTRA_BUNDLE_PATH={configured!r} not found and no "
+            f"secure-connect-*.zip bundle in {search_dir!r}. "
+            "Download the bundle from astra.datastax.com and place it there, "
+            "or set ASTRA_BUNDLE_PATH to its exact path."
+        )
+    raise RuntimeError(
+        f"ASTRA_BUNDLE_PATH={configured!r} not found and multiple bundles "
+        f"matched in {search_dir!r}: {matches}. "
+        "Set ASTRA_BUNDLE_PATH to the specific .zip to use."
+    )
+
+
 def _build_cluster() -> Cluster:
     if USE_ASTRA:
         missing = [
@@ -77,13 +113,9 @@ def _build_cluster() -> Cluster:
                 f"USE_ASTRA=true but missing env vars: {', '.join(missing)}. "
                 "Set them or switch to USE_ASTRA=false for the local docker fallback."
             )
-        if not os.path.exists(ASTRA_BUNDLE_PATH):
-            raise RuntimeError(
-                f"ASTRA_BUNDLE_PATH does not point to an existing file: {ASTRA_BUNDLE_PATH}. "
-                "Download the Secure Connect Bundle from astra.datastax.com and update the env var."
-            )
+        bundle_path = _resolve_bundle_path(ASTRA_BUNDLE_PATH)
         return Cluster(
-            cloud={"secure_connect_bundle": ASTRA_BUNDLE_PATH},
+            cloud={"secure_connect_bundle": bundle_path},
             auth_provider=PlainTextAuthProvider(ASTRA_CLIENT_ID, ASTRA_CLIENT_SECRET),
         )
     return Cluster([LOCAL_CASSANDRA_HOST], port=LOCAL_CASSANDRA_PORT)
