@@ -10,7 +10,7 @@ Here is the master checklist required to take this project from its current mock
 - [ ] Observability 
 
 ## 2. 💽 Distributed State & Security (Crucial Missing Pieces)
-- [ ] **Shared Database Setup:** Set up a database (Cassandra) to store Users, Passwords, and Request History. *If the Leader laptop dies, the new Leader must be able to read this database so users don't lose their chat history.*
+- [x] **Shared Database Setup:** Migrated from per-laptop docker Cassandra (each leader had its own empty DB after failover) to managed Astra DataStax. All leaders now connect to the same shared cloud Cassandra so Users, Passwords, and Request History survive leader failover. Code path uses cassandra-driver with prepared statements; selectable via `USE_ASTRA=true|false` env var. See `server/leader/.env.example` for credentials and `.venv/astra_migration_plan.md` for the full migration writeup.
 - [Skip] **JWT Authentication:** Implement JSON Web Tokens (JWT) on the Leader to secure the `/ask` endpoints so only logged-in users can send prompts.
 
 ## 3. 🧠 Backend: The Worker Node (`worker.py`) (shivansh)

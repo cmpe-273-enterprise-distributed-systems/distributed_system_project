@@ -30,8 +30,10 @@ A distributed system where laptops pool compute over a VPN to run local AI model
 │   ├── POST /task/complete    → worker returns AI result   │
 │   └── GET  /task/result/{id} → fetch completed response  │
 │                                                           │
-│   Cassandra DB → stores users and request history         │
-│   Kafka (planned) → distributes tasks to workers          │
+│   Astra DataStax (managed Cassandra)                      │
+│     → stores users + request history; shared by all       │
+│     leaders so data survives leader failover              │
+│   Kafka → distributes tasks to workers                    │
 └──────────┬───────────────────────┬────────────────────────┘
            │                       │
            ▼                       ▼
@@ -102,7 +104,16 @@ ollama serve
 
 Starts the local AI model server on `http://localhost:11434`.
 
-### Terminal 2 — Cassandra Database
+### Terminal 2 — Database (Astra default; local docker fallback)
+
+The leader connects to a managed Astra DataStax (Cassandra) database by
+default — no local terminal needed in this mode. See "Database setup" in
+the root [README.md](README.md) for the one-time Astra provisioning
+steps. After that, just set `USE_ASTRA=true` plus `ASTRA_BUNDLE_PATH` /
+`ASTRA_CLIENT_ID` / `ASTRA_CLIENT_SECRET` in `server/leader/.env` and
+skip this terminal entirely.
+
+For offline-dev (`USE_ASTRA=false` in `server/leader/.env`):
 
 ```bash
 cd client
@@ -115,6 +126,7 @@ make db-setup
 ```
 
 > To reset: `make db-reset` · To inspect: `make db-shell`
+> Note: local mode data is leader-local and does NOT survive leader failover.
 
 ### Terminal 3 — FastAPI Backend (Leader Node)
 
@@ -291,10 +303,12 @@ cp .env.example .env
 |---|---|
 | `Cannot reach Leader` | Make sure `main.py` is running (Terminal 3) |
 | `Models: (none)` | Make sure `ollama serve` is running (Terminal 1) |
-| `ModuleNotFoundError: cassandra` | Activate the venv: `source venv/bin/activate` |
+| `ModuleNotFoundError: cassandra` | Activate the venv and reinstall: `source venv/bin/activate && pip install -r server/leader/requirements.txt` (cassandra-driver replaces the old cqlsh subprocess shim) |
 | `Read timed out` from Ollama | Use a smaller model (`llama3.2:3b`) or just wait longer |
 | `Skills: (none)` | Create a skill file: `touch server/coding.skill` |
-| `Database not connected` | Start Cassandra first: `cd client && make db-up && make db-setup` |
+| `RuntimeError: USE_ASTRA=true but missing env vars` | Either fill in `ASTRA_BUNDLE_PATH`/`ASTRA_CLIENT_ID`/`ASTRA_CLIENT_SECRET` in `server/leader/.env`, or set `USE_ASTRA=false` to use local docker Cassandra |
+| `Database not connected` (local mode) | Start Cassandra first: `cd client && make db-up && make db-setup` |
+| `secure connect bundle does not exist` | Download the .zip from astra.datastax.com and place it where `ASTRA_BUNDLE_PATH` points (default `./secrets/secure-connect-web-app.zip`) |
 | `Frontend won't start` | Run `npm install` in `client/` |
 
 ---

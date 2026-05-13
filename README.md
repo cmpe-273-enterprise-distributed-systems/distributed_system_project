@@ -87,10 +87,48 @@ A distributed system where laptops pool compute over a VPN to run local AI model
 
 ## How to Run the Full Pipeline Locally
 
-To run the complete system (React -> FastAPI -> Cassandra), you will need to open **three separate terminal windows**.
+To run the complete system (React -> FastAPI -> Cassandra), you will need to open **two or three separate terminal windows** depending on your database mode.
 
-### 1. The Database (Terminal 1)
+### 1. The Database
+
+The leader supports two modes, selected by the `USE_ASTRA` env var in
+`server/leader/.env`:
+
+#### Mode A — Astra DataStax (default; required for multi-laptop demo)
+
+User data and request history live in a managed cloud Cassandra so they
+survive leader failover. Set up once per database, then every leader
+connects to the same instance.
+
+1. Sign up at [astra.datastax.com](https://astra.datastax.com), create a
+   serverless DB, and create a keyspace named `web_app`.
+2. Open the Astra console's CQL editor against `web_app` and run
+   `client/db/002_tables.cql` followed by `client/db/003_seed_data.cql`.
+   Skip `001_keyspace.cql` — Astra creates the keyspace itself.
+3. Generate an application token (Database Administrator role); copy
+   `clientId` + `clientSecret`.
+4. Download the **Secure Connect Bundle** (.zip) and place it at
+   `secrets/secure-connect-web-app.zip` (or wherever
+   `ASTRA_BUNDLE_PATH` points). The .zip is gitignored.
+5. In `server/leader/.env`:
+   ```
+   USE_ASTRA=true
+   ASTRA_BUNDLE_PATH=./secrets/secure-connect-web-app.zip
+   ASTRA_CLIENT_ID=<from token>
+   ASTRA_CLIENT_SECRET=<from token>
+   ASTRA_KEYSPACE=web_app
+   ```
+
+No "database terminal" is needed in Astra mode.
+
+#### Mode B — Local docker Cassandra (offline-dev fallback only)
+
+Data is leader-local and does **not** survive failover. Useful for
+working without internet or before Astra is provisioned.
+
 **Requirements:** Docker and Python 3 installed.
+
+In `server/leader/.env`, set `USE_ASTRA=false` (then run in a dedicated terminal):
 ```bash
 cd client
 
@@ -102,7 +140,7 @@ make db-setup
 ```
 *(To reset the database, run `make db-reset`. To view data, run `make db-shell`)*
 
-### 2. The FastAPI Backend (Terminal 2)
+### 2. The FastAPI Backend
 ```bash
 cd server/leader
 python3 -m venv venv
@@ -112,7 +150,7 @@ pip install -r requirements.txt
 python3 -m uvicorn main:app --reload
 ```
 
-### 3. The React Frontend (Terminal 3)
+### 3. The React Frontend
 **Requirements:** Node.js installed
 ```bash
 cd client
