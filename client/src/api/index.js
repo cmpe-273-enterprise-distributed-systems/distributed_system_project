@@ -236,15 +236,39 @@ export async function sendPrompt(prompt, userId, userName) {
 
 // Streaming: POST /ask/stream (SSE)
 // Usage: sendPromptStream(prompt, userId, userName, ({ type, data }) => { ... })
+//
+// Manual one-shot retry on 503/network failure to mirror the axios interceptor:
+// fetch() doesn't go through axios, so the dormant-FastAPI gate (Scenario 2B
+// Task 3) returns 503 here without anyone catching it. Re-resolve the leader
+// via discovery and try once more.
 export async function sendPromptStream(prompt, userId, userName, onEvent) {
-  const leader = await ensureLeader();
-  const url = `${leader}/ask/stream`;
+  const body = JSON.stringify({ prompt, user_id: userId || '', user_name: userName || 'anonymous' });
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, user_id: userId || '', user_name: userName || 'anonymous' }),
-  });
+  let res;
+  let leader = await ensureLeader();
+  try {
+    res = await fetch(`${leader}/ask/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+  } catch (networkErr) {
+    leader = await ensureLeader({ forceRefresh: true });
+    res = await fetch(`${leader}/ask/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+  }
+
+  if (res && [502, 503, 504].includes(res.status)) {
+    leader = await ensureLeader({ forceRefresh: true });
+    res = await fetch(`${leader}/ask/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+  }
 
   if (!res.ok || !res.body) {
     throw new Error('Failed to start streaming request.');

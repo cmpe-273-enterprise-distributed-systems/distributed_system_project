@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -115,11 +115,42 @@ async def lifespan(app: FastAPI):
     save_cluster_state()
 
     monitor = LeaderMonitor(cfg["node_id"], node_url, discovery)
+    # Stash on app.state so require_leader() can consult it without globals.
+    app.state.monitor = monitor
     asyncio.create_task(monitor.run())
     yield
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+def require_leader(request: Request) -> None:
+    """
+    Dependency that gates user-facing endpoints to the elected, quorum-holding
+    leader. Returns 503 with the current leader URL (when known) so workers
+    and the React client can re-resolve via discovery and retry.
+
+    Apply to /ask, /register, /heartbeat, /auth/*, /admin/*, and the
+    cluster_state/database read endpoints whose answers are leader-local.
+    Do NOT apply to /health, /cluster/{join,sync,status}, /leader,
+    /discovery/leader, /server/*, or the well-known endpoint — those are part
+    of the election machinery or are local-machine introspection that any
+    node can answer.
+    """
+    monitor: LeaderMonitor | None = getattr(request.app.state, "monitor", None)
+    if monitor is not None and monitor.is_local_leader:
+        return
+    leader = get_leader()
+    leader_url = (leader or {}).get("url")
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "not_leader",
+            "message": "Not the leader. Re-resolve via discovery.",
+            "leader_url": leader_url,
+        },
+        headers={"X-Leader-URL": leader_url} if leader_url else None,
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -316,7 +347,7 @@ async def server_local_node():
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
-@app.post("/auth/login")
+@app.post("/auth/login", dependencies=[Depends(require_leader)])
 async def login(body: LoginBody):
     user = await get_user_by_email(body.email)
     if not user or user["password_hash"] != _hash(body.password):
@@ -324,7 +355,7 @@ async def login(body: LoginBody):
     return {k: v for k, v in user.items() if k != "password_hash"}
 
 
-@app.post("/auth/signup")
+@app.post("/auth/signup", dependencies=[Depends(require_leader)])
 async def signup(body: SignupBody):
     if await get_user_by_email(body.email):
         raise HTTPException(409, "An account with that email already exists.")
@@ -334,7 +365,7 @@ async def signup(body: SignupBody):
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
 
-@app.post("/ask")
+@app.post("/ask", dependencies=[Depends(require_leader)])
 async def ask(body: AskBody):
     request_id = str(uuid.uuid4())
 
@@ -379,7 +410,7 @@ async def ask(body: AskBody):
     }
 
 
-@app.post("/ask/stream")
+@app.post("/ask/stream", dependencies=[Depends(require_leader)])
 async def ask_stream(body: AskBody):
     """
     Server-Sent Events (SSE) endpoint for chat responses.
@@ -434,7 +465,7 @@ async def ask_stream(body: AskBody):
 
 # ── Node registration & heartbeat ────────────────────────────────────────────
 
-@app.post("/register")
+@app.post("/register", dependencies=[Depends(require_leader)])
 async def register_node(body: RegisterBody, request: Request):
     ip = request.client.host
     await registry.register(body.node_id, ip, body.ram_gb, body.model, body.skills)
@@ -462,7 +493,7 @@ async def register_node(body: RegisterBody, request: Request):
     }
 
 
-@app.post("/heartbeat")
+@app.post("/heartbeat", dependencies=[Depends(require_leader)])
 async def heartbeat(body: HeartbeatBody):
     known = await registry.heartbeat(body.node_id, body.status, body.tasks_completed)
     update_heartbeat(body.node_id, body.status, body.tasks_completed)
@@ -583,7 +614,7 @@ async def well_known():
 
 # ── Cluster stats ─────────────────────────────────────────────────────────────
 
-@app.get("/cluster/stats")
+@app.get("/cluster/stats", dependencies=[Depends(require_leader)])
 async def cluster_stats():
     nodes = await registry.get_all()
     requests = await get_all_requests()
@@ -608,7 +639,7 @@ async def cluster_stats():
     }
 
 
-@app.get("/cluster/nodes")
+@app.get("/cluster/nodes", dependencies=[Depends(require_leader)])
 async def cluster_nodes():
     nodes = await registry.get_all()
     return [
@@ -626,7 +657,7 @@ async def cluster_nodes():
     ]
 
 
-@app.get("/cluster/requests")
+@app.get("/cluster/requests", dependencies=[Depends(require_leader)])
 async def cluster_requests():
     rows = await get_all_requests()
     return [
@@ -646,18 +677,18 @@ async def cluster_requests():
 
 # ── Admin users ───────────────────────────────────────────────────────────────
 
-@app.get("/admin/users")
+@app.get("/admin/users", dependencies=[Depends(require_leader)])
 async def admin_get_users():
     return await get_all_users()
 
 
-@app.patch("/admin/users/{user_id}")
+@app.patch("/admin/users/{user_id}", dependencies=[Depends(require_leader)])
 async def admin_update_role(user_id: str, body: UpdateRoleBody):
     await update_user_role(user_id, body.role)
     return {"success": True}
 
 
-@app.delete("/admin/users/{user_id}")
+@app.delete("/admin/users/{user_id}", dependencies=[Depends(require_leader)])
 async def admin_delete_user(user_id: str):
     await delete_user(user_id)
     return {"success": True}
