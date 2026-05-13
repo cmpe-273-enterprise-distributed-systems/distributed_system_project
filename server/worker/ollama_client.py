@@ -3,14 +3,19 @@ import httpx
 OLLAMA_BASE = "http://localhost:11434"
 
 
-def generate(model: str, prompt: str, timeout: int = 300) -> str:
-    """Send a prompt to the local Ollama instance and return the response text."""
+def generate(model: str, prompt: str, system: str | None = None, timeout: int = 300) -> str:
+    """Send a prompt to the local Ollama instance and return the response text.
+
+    `system`, when provided, is passed to Ollama's `/api/generate` `system`
+    field — the model treats it as the system context for this turn. This
+    is how skill-tagged tasks get the matching SKILL.md text injected.
+    """
+    body: dict = {"model": model, "prompt": prompt, "stream": False}
+    if system:
+        body["system"] = system
     try:
         with httpx.Client(timeout=timeout) as client:
-            resp = client.post(
-                f"{OLLAMA_BASE}/api/generate",
-                json={"model": model, "prompt": prompt, "stream": False},
-            )
+            resp = client.post(f"{OLLAMA_BASE}/api/generate", json=body)
             resp.raise_for_status()
             return resp.json()["response"]
     except Exception:

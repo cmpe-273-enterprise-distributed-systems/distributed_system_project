@@ -77,6 +77,7 @@ class TaskProducer:
         user_name: str,
         *,
         tier_override: str | None,
+        skill: str | None,
         registry,
     ) -> str:
         """
@@ -84,19 +85,28 @@ class TaskProducer:
 
         1. Resolve tier (override if valid, else token heuristic).
         2. Walk TIER_ORDER starting at the resolved tier. First tier with at
-           least one eligible (RAM-meeting, non-offline) worker wins.
+           least one eligible worker (RAM-meeting, non-offline, AND
+           advertising `skill` if given) wins.
         3. If no tier has any eligible worker, raise NoEligibleWorker.
+           Skill is a hard filter — if no worker advertises it, every tier
+           comes back empty and the request 503s. The worker side degrades
+           gracefully if Kafka happens to route within a tier topic to a
+           worker that doesn't have the skill (see process_task).
         """
         requested_tier = tier_override if tier_override in TIER_RAM_GB else _classify_tier(prompt)
         start_idx = TIER_ORDER.index(requested_tier)
 
         chosen_tier: str | None = None
         for tier in TIER_ORDER[start_idx:]:
-            if await registry.eligible(TIER_RAM_GB[tier]):
+            if await registry.eligible(TIER_RAM_GB[tier], skill=skill):
                 chosen_tier = tier
                 break
 
         if chosen_tier is None:
+            if skill:
+                raise NoEligibleWorker(
+                    f"No worker advertising skill {skill!r} is online to handle this task."
+                )
             raise NoEligibleWorker("No worker is online to handle this task.")
 
         topic = f"tasks-{chosen_tier}"
@@ -109,6 +119,7 @@ class TaskProducer:
             "topic": topic,
             "tier": chosen_tier,
             "requested_tier": requested_tier,
+            "skill": skill,
         })
         self._producer.flush()
         return chosen_tier

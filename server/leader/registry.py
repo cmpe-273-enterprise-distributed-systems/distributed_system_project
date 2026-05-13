@@ -51,12 +51,20 @@ class Registry:
         async with self._lock:
             return list(self._nodes.values())
 
-    async def eligible(self, min_ram_gb: int) -> list[NodeInfo]:
-        """Alive workers that meet the RAM threshold. Used by the dispatch preflight."""
+    async def eligible(self, min_ram_gb: int, skill: str | None = None) -> list[NodeInfo]:
+        """Alive workers that meet the RAM threshold AND, if given, advertise `skill`.
+
+        Skill is a hard filter — if no alive worker has the requested skill,
+        this returns []. The TaskProducer downgrade walk then finds nothing
+        at any tier and raises NoEligibleWorker, which /ask maps to 503.
+        Pass skill=None to keep the original RAM-only behavior.
+        """
         async with self._lock:
             return [
                 n for n in self._nodes.values()
-                if n.status != "offline" and n.ram_gb >= min_ram_gb
+                if n.status != "offline"
+                and n.ram_gb >= min_ram_gb
+                and (skill is None or skill in (n.skills or []))
             ]
 
     async def check_timeouts(self):

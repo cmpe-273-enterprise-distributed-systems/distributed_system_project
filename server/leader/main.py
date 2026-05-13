@@ -211,6 +211,7 @@ class AskBody(BaseModel):
     user_id: str = ""
     user_name: str = "anonymous"
     tier: Optional[str] = None
+    skill: Optional[str] = None
 
 class RegisterBody(BaseModel):
     node_id: str
@@ -393,7 +394,7 @@ async def ask(body: AskBody):
     try:
         chosen_tier = await producer.publish(
             request_id, body.prompt, body.user_id, body.user_name,
-            tier_override=body.tier, registry=registry,
+            tier_override=body.tier, skill=body.skill, registry=registry,
         )
     except NoEligibleWorker as e:
         result_consumer.cancel(request_id)
@@ -443,7 +444,7 @@ async def ask_stream(body: AskBody):
     try:
         chosen_tier = await producer.publish(
             request_id, body.prompt, body.user_id, body.user_name,
-            tier_override=body.tier, registry=registry,
+            tier_override=body.tier, skill=body.skill, registry=registry,
         )
     except NoEligibleWorker as e:
         result_consumer.cancel(request_id)
@@ -674,6 +675,23 @@ async def cluster_nodes():
         }
         for n in nodes
     ]
+
+
+@app.get("/cluster/skills", dependencies=[Depends(require_leader)])
+async def cluster_skills():
+    """
+    Aggregate skills advertised by alive workers across the cluster. Lets
+    clients (and any future React skill picker) discover what skill values
+    are accepted by /ask. Skill names come from worker SKILL.md directory
+    names — see server/worker/skills/ and the load_skills() loader.
+    """
+    nodes = await registry.get_all()
+    skills: set[str] = set()
+    for n in nodes:
+        if n.status == "offline":
+            continue
+        skills.update(n.skills or [])
+    return {"skills": sorted(skills)}
 
 
 @app.get("/cluster/requests", dependencies=[Depends(require_leader)])
