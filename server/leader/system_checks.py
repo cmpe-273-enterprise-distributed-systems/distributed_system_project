@@ -268,57 +268,56 @@ async def check_kafka_broker() -> CheckItem:
 
 
 async def check_cassandra_schema() -> CheckItem:
-    container = os.getenv("DB_CQLSH_CONTAINER", "web-app-cassandra").strip()
-    if not shutil.which("docker"):
-        return CheckItem(
-            name="Cassandra schema",
-            status="fail",
-            detail="Docker CLI not found; cannot validate Cassandra via container.",
-            help="Install Docker, ensure cassandra container is running, then re-open this page.",
-        )
+    """
+    Probes the database via the cassandra-driver session that database.py
+    initializes. Works for both connection modes:
+      USE_ASTRA=true  -> validates that Astra credentials + bundle work and
+                         the keyspace contains the expected tables.
+      USE_ASTRA=false -> validates that local docker Cassandra is up and the
+                         schema has been applied.
+    """
+    from database import USE_ASTRA, _get_session, _keyspace
+
+    mode_label = "Astra" if USE_ASTRA else "local docker"
+    expected_tables = {"users", "requests", "cluster_requests_by_month"}
 
     try:
-        # Run a simple describe; if the schema is created it should include keyspace "web_app".
-        res = await asyncio.to_thread(
-            subprocess.run,
-            ["docker", "exec", container, "cqlsh", "-e", "DESCRIBE KEYSPACES;"],
-            # extra kwargs:
+        session = await asyncio.to_thread(_get_session)
+        rows = await asyncio.to_thread(
+            session.execute,
+            "SELECT table_name FROM system_schema.tables WHERE keyspace_name = %s",
+            (_keyspace(),),
         )
-    except TypeError:
-        # older python subprocess.run signature mismatch in to_thread wrapper; fall back:
-        res = None
+        present = {r.table_name for r in rows}
+        missing = expected_tables - present
+        if missing:
+            return CheckItem(
+                name="Cassandra schema",
+                status="warn",
+                detail=f"Connected to {mode_label} keyspace `{_keyspace()}` but missing tables: {sorted(missing)}.",
+                help="Apply client/db/002_tables.cql against this keyspace (Astra console CQL editor for cloud, or cqlsh for local).",
+            )
+        return CheckItem(
+            name="Cassandra schema",
+            status="ok",
+            detail=f"Connected to {mode_label} keyspace `{_keyspace()}`; all tables present.",
+        )
     except Exception as e:
+        if USE_ASTRA:
+            help_text = (
+                "Set ASTRA_BUNDLE_PATH, ASTRA_CLIENT_ID, ASTRA_CLIENT_SECRET in "
+                "server/leader/.env and confirm the secure-connect-bundle .zip exists at the configured path."
+            )
+        else:
+            help_text = (
+                "Run `docker compose up -d cassandra`, apply the CQL files, "
+                "and confirm LOCAL_CASSANDRA_HOST/PORT (default 127.0.0.1:9042) is reachable."
+            )
         return CheckItem(
             name="Cassandra schema",
             status="fail",
-            detail=f"Failed to query Cassandra keyspaces: {e}",
-            help="Start Cassandra (docker compose) and ensure init scripts ran.",
-        )
-
-    # If the above simplistic call didn't capture output properly, use the robust path:
-    try:
-        res = await asyncio.to_thread(
-            subprocess.run,
-            ["docker", "exec", container, "cqlsh", "-e", "DESCRIBE KEYSPACES;"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        out = (res.stdout or "") + (res.stderr or "")
-        if "web_app" in out:
-            return CheckItem(name="Cassandra schema", status="ok", detail="Found keyspace `web_app`.")
-        return CheckItem(
-            name="Cassandra schema",
-            status="warn",
-            detail="Keyspace `web_app` not found.",
-            help="Run the Cassandra init/setup scripts before starting the leader.",
-        )
-    except Exception as e:
-        return CheckItem(
-            name="Cassandra schema",
-            status="fail",
-            detail=f"Cannot verify Cassandra schema in container `{container}`: {e}",
-            help="Run `docker compose up -d cassandra` and apply the CQL files.",
+            detail=f"Cannot reach Cassandra ({mode_label}): {e}",
+            help=help_text,
         )
 
 

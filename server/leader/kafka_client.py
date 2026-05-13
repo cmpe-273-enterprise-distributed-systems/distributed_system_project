@@ -23,6 +23,17 @@ from typing import Any
 
 from kafka import KafkaConsumer, KafkaProducer
 
+
+def _parse_brokers(s: str) -> list[str]:
+    """
+    Parse a comma-separated bootstrap-servers string into a list. kafka-python
+    treats a single string as one host, so passing "a:9092,b:9092" verbatim
+    would fail to discover the second broker — we have to split it ourselves
+    so the client can fail over to peer brokers in the same KRaft quorum.
+    """
+    return [b.strip() for b in s.split(",") if b.strip()]
+
+
 # RAM tier thresholds (GB). Must stay in sync with server/worker/kafka_client.py.
 TIER_RAM_GB = {"high-ram": 16, "low-ram": 8, "general": 0}
 # Ordered most-capable → least-capable. Used as the downgrade walk order.
@@ -49,7 +60,7 @@ def _classify_tier(prompt: str) -> str:
 class TaskProducer:
     def __init__(self, bootstrap_servers: str):
         self._producer = KafkaProducer(
-            bootstrap_servers=bootstrap_servers,
+            bootstrap_servers=_parse_brokers(bootstrap_servers),
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         )
 
@@ -135,7 +146,7 @@ class ResultConsumer:
     def _consume(self):
         consumer = KafkaConsumer(
             "completed-tasks",
-            bootstrap_servers=self._bootstrap,
+            bootstrap_servers=_parse_brokers(self._bootstrap),
             group_id="leader",
             value_deserializer=lambda b: json.loads(b.decode("utf-8")),
             auto_offset_reset="latest",

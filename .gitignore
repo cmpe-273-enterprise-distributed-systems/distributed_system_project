@@ -22,6 +22,10 @@ dist/
 *.pem
 *.key
 
+# Astra DataStax Secure Connect Bundle — never commit. Per-database TLS certs.
+secure-connect-*.zip
+secrets/
+
 # ── Build outputs ─────────────────────
 build/
 dist/

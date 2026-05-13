@@ -86,6 +86,32 @@ def resolve_leader_from_discovery() -> str | None:
         return None
 
 
+def _not_leader_hint(exc: Exception) -> str | None:
+    """
+    If `exc` is a 503 from a leader that has self-demoted (or never was the
+    leader), return the URL it advertised so we can switch immediately
+    instead of waiting HEARTBEAT_FAILURE_THRESHOLD ticks for the discovery
+    re-resolve fallback. Returns None for any other exception.
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    if exc.response.status_code != 503:
+        return None
+    hint = exc.response.headers.get("X-Leader-URL", "").strip()
+    if hint:
+        return hint
+    try:
+        body = exc.response.json()
+        detail = body.get("detail") if isinstance(body, dict) else None
+        if isinstance(detail, dict) and detail.get("code") == "not_leader":
+            url = (detail.get("leader_url") or "").strip()
+            if url:
+                return url
+    except Exception:
+        pass
+    return None
+
+
 # ── Hardware profiling ────────────────────────────────────────────────────────
 
 def get_ollama_models() -> list[str]:
@@ -148,6 +174,10 @@ def register() -> str:
             print(f"[{NODE_ID}] Registered with leader at {url}. Kafka broker: {broker}")
             return broker
         except Exception as e:
+            if (hint := _not_leader_hint(e)) and hint != url:
+                _set_leader_url(hint)
+                print(f"[{NODE_ID}] {url} returned 503 not_leader; switching to {hint} and retrying.")
+                continue
             print(f"[{NODE_ID}] Registration failed against {url} ({e}). Retrying in 5 s…")
             time.sleep(5)
     return KAFKA_BROKER
@@ -177,6 +207,17 @@ def heartbeat_loop(kafka: WorkerKafka):
                 print(f"[{NODE_ID}] Kafka broker changed to {new_broker}.")
                 kafka.request_reconnect(new_broker)
         except Exception as e:
+            if (hint := _not_leader_hint(e)) and hint != url:
+                # Fast path: leader self-demoted (Scenario 2B Task 3 gate) or
+                # we're talking to a node that never was the leader. Skip the
+                # 3-failure threshold and switch immediately.
+                print(f"[{NODE_ID}] Heartbeat to {url} returned 503 not_leader; switching to {hint}.")
+                _set_leader_url(hint)
+                new_broker = register()
+                kafka.request_reconnect(new_broker)
+                failures = 0
+                time.sleep(HEARTBEAT_INTERVAL)
+                continue
             failures += 1
             print(f"[{NODE_ID}] Heartbeat to {url} failed ({failures}/{HEARTBEAT_FAILURE_THRESHOLD}): {e}")
             if failures >= HEARTBEAT_FAILURE_THRESHOLD:

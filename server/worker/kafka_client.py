@@ -2,6 +2,17 @@ import json
 
 from kafka import KafkaConsumer, KafkaProducer
 
+
+def _parse_brokers(s: str) -> list[str]:
+    """
+    Parse a comma-separated bootstrap-servers string into a list. kafka-python
+    treats a single string as one host, so passing "a:9092,b:9092" verbatim
+    would fail to discover the second broker — we have to split it ourselves
+    so the worker can fail over to peer brokers in the same KRaft quorum.
+    """
+    return [b.strip() for b in s.split(",") if b.strip()]
+
+
 # RAM tier thresholds (GB). Must stay in sync with server/leader/kafka_client.py.
 TIER_RAM_GB = {"high-ram": 16, "low-ram": 8, "general": 0}
 TIER_ORDER = ["high-ram", "low-ram", "general"]
@@ -45,7 +56,7 @@ class WorkerKafka:
     def _make_consumer(self, bootstrap_servers: str) -> KafkaConsumer:
         return KafkaConsumer(
             *self._topics,
-            bootstrap_servers=bootstrap_servers,
+            bootstrap_servers=_parse_brokers(bootstrap_servers),
             group_id="workers",
             value_deserializer=lambda b: json.loads(b.decode("utf-8")),
             # earliest: if a partition gets reassigned after a worker death,
@@ -65,7 +76,7 @@ class WorkerKafka:
 
     def _make_producer(self, bootstrap_servers: str) -> KafkaProducer:
         return KafkaProducer(
-            bootstrap_servers=bootstrap_servers,
+            bootstrap_servers=_parse_brokers(bootstrap_servers),
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         )
 

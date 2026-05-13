@@ -127,12 +127,23 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     strategy = StrategyFactory.create()
 
+    # USE_ASTRA controls whether the leader connects to Astra DataStax (cloud)
+    # or local docker Cassandra. When true (the default for the demo), we don't
+    # bring up the local cassandra container or apply CQL — Astra is already
+    # provisioned out-of-band and the schema lives in the cloud.
+    use_astra_raw = os.getenv("USE_ASTRA", "true").strip().lower()
+    use_astra = use_astra_raw in ("1", "true", "yes", "on")
+
     # Start docker stack first so leader/worker can connect.
     if args.docker:
-        run_docker_compose(repo_root, ["kafka", "cassandra"])
-        # Apply schema (safe if already applied)
-        time.sleep(3)
-        apply_cql_from_files(repo_root)
+        targets = ["kafka"] if use_astra else ["kafka", "cassandra"]
+        run_docker_compose(repo_root, targets)
+        if not use_astra:
+            # Apply schema (safe if already applied)
+            time.sleep(3)
+            apply_cql_from_files(repo_root)
+        else:
+            print("USE_ASTRA=true — skipping local cassandra container + CQL apply.")
 
     # Start Ollama if requested and not reachable.
     if args.ollama:
