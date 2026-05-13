@@ -62,6 +62,11 @@ class TaskProducer:
         self._producer = KafkaProducer(
             bootstrap_servers=_parse_brokers(bootstrap_servers),
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            # acks="all" is required for the topic-level min.insync.replicas
+            # setting to take effect. Without it, the producer is satisfied as
+            # soon as the partition leader broker acks, and a single broker
+            # death (case B) could lose acknowledged writes.
+            acks="all",
         )
 
     async def publish(
@@ -115,10 +120,25 @@ class ResultConsumer:
     When a result arrives for a tracked request_id, it stores the payload
     and signals the corresponding asyncio.Event so the waiting /ask handler
     can return the response to the client.
+
+    Each leader process uses a UNIQUE consumer group (`leader-{node_id}`)
+    rather than sharing `group_id="leader"`. Reason: in the multi-laptop
+    demo every leader-eligible process runs ResultConsumer (because the
+    election machinery lives in the FastAPI process), but the waiting
+    asyncio.Event for a given request_id only exists on the elected
+    leader. With a shared group, Kafka would distribute partitions across
+    all leader processes — most results would land on a non-elected
+    leader, find no matching _pending entry, and silently drop. With
+    per-instance groups, every leader receives every result; only the
+    elected leader's pop succeeds; the others harmlessly no-op.
+
+    The cost is N-fold fanout on completed-tasks (one delivery per leader
+    process). At demo scale this is negligible.
     """
 
-    def __init__(self, bootstrap_servers: str):
+    def __init__(self, bootstrap_servers: str, node_id: str):
         self._bootstrap = bootstrap_servers
+        self._group_id = f"leader-{node_id}"
         self._pending: dict[str, asyncio.Event] = {}
         self._results: dict[str, Any] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -147,7 +167,7 @@ class ResultConsumer:
         consumer = KafkaConsumer(
             "completed-tasks",
             bootstrap_servers=_parse_brokers(self._bootstrap),
-            group_id="leader",
+            group_id=self._group_id,
             value_deserializer=lambda b: json.loads(b.decode("utf-8")),
             auto_offset_reset="latest",
             enable_auto_commit=True,

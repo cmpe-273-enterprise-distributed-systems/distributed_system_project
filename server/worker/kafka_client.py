@@ -78,6 +78,10 @@ class WorkerKafka:
         return KafkaProducer(
             bootstrap_servers=_parse_brokers(bootstrap_servers),
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            # acks="all" honors topic min.insync.replicas: with RF=3/ISR=2,
+            # the producer fails fast if fewer than 2 brokers are alive
+            # rather than acknowledging a write only the dying leader saw.
+            acks="all",
         )
 
     # ── Public interface ──────────────────────────────────────────────────────

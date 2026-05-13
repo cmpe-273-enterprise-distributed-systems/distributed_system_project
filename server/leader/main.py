@@ -38,6 +38,7 @@ from database import (
     update_user_role,
 )
 from discovery import DiscoveryClient
+from kafka_admin import ensure_topics
 from kafka_client import NoEligibleWorker, ResultConsumer, TaskProducer
 from leader_monitor import LeaderMonitor
 from node_config import load_or_create_node_config
@@ -80,14 +81,18 @@ python app.py --port 8001 --leader {leader_base}</pre>
 
 registry = Registry()
 producer = TaskProducer(KAFKA_BROKER)
-result_consumer = ResultConsumer(KAFKA_BROKER)
 discovery = DiscoveryClient()
+# ResultConsumer needs the local node_id to scope its consumer group
+# (see kafka_client.ResultConsumer docstring) — constructed inside the
+# lifespan after node_config is loaded.
+result_consumer: Optional[ResultConsumer] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global result_consumer
+
     await init_db()
-    result_consumer.start(asyncio.get_event_loop())
     asyncio.create_task(registry.check_timeouts())
 
     # Hydrate cluster state from disk before we touch known_nodes / save.
@@ -99,6 +104,20 @@ async def lifespan(app: FastAPI):
     host = get_advertise_host()
     port = int(cfg.get("port") or 8000)
     node_url = f"http://{host}:{port}"
+
+    # Pre-create cluster topics with the right replication factor before any
+    # producer/consumer auto-creates them at RF=1 (which would silently break
+    # case-B failover). Idempotent; logs each topic as 'created' / 'exists' /
+    # 'rf_mismatch'. Raises RuntimeError if no broker is reachable, which we
+    # let propagate — a leader without Kafka can't function anyway.
+    try:
+        topic_status = ensure_topics(KAFKA_BROKER)
+        print(f"Topic provisioning: {topic_status}")
+    except Exception as exc:
+        print(f"WARNING: ensure_topics failed: {exc}. Topics will auto-create at RF=1 — case-B failover may hang.")
+
+    result_consumer = ResultConsumer(KAFKA_BROKER, cfg["node_id"])
+    result_consumer.start(asyncio.get_event_loop())
 
     # Ensure this node is always present in known_nodes on startup.
     add_or_update_node({
