@@ -181,6 +181,20 @@ export async function getRequests() {
   return res.data;
 }
 
+// Real: GET /cluster/skills
+// Returns the union of skills advertised by alive workers, sorted.
+// Used by the chat-screen skill picker so users can override the leader's
+// keyword-based auto-classifier when they want a specific skill applied.
+export async function getClusterSkills() {
+  try {
+    const res = await api.get(`/cluster/skills`);
+    return res.data?.skills || [];
+  } catch {
+    // Soft failure — picker just shows "Auto" with no other options.
+    return [];
+  }
+}
+
 /* ── Admin ────────────────────────────────── */
 
 // Real: GET /admin/users
@@ -228,21 +242,29 @@ export async function healthCheck() {
   }
 }
 
-// Real: POST /ask  { prompt }
-export async function sendPrompt(prompt, userId, userName) {
-  const res = await api.post(`/ask`, { prompt, user_id: userId || '', user_name: userName || 'anonymous' });
+// Real: POST /ask  { prompt, skill? }
+export async function sendPrompt(prompt, userId, userName, skill) {
+  const body = { prompt, user_id: userId || '', user_name: userName || 'anonymous' };
+  if (skill) body.skill = skill;
+  const res = await api.post(`/ask`, body);
   return res.data;
 }
 
 // Streaming: POST /ask/stream (SSE)
-// Usage: sendPromptStream(prompt, userId, userName, ({ type, data }) => { ... })
+// Usage: sendPromptStream(prompt, userId, userName, skill, ({ type, data }) => { ... })
+//
+// `skill` is optional ("" / null = let the leader auto-classify from prompt
+// keywords). When set, the leader treats it as a hard requirement and 503s
+// if no worker advertises it.
 //
 // Manual one-shot retry on 503/network failure to mirror the axios interceptor:
 // fetch() doesn't go through axios, so the dormant-FastAPI gate (Scenario 2B
 // Task 3) returns 503 here without anyone catching it. Re-resolve the leader
 // via discovery and try once more.
-export async function sendPromptStream(prompt, userId, userName, onEvent) {
-  const body = JSON.stringify({ prompt, user_id: userId || '', user_name: userName || 'anonymous' });
+export async function sendPromptStream(prompt, userId, userName, skill, onEvent) {
+  const payload = { prompt, user_id: userId || '', user_name: userName || 'anonymous' };
+  if (skill) payload.skill = skill;
+  const body = JSON.stringify(payload);
 
   let res;
   let leader = await ensureLeader();

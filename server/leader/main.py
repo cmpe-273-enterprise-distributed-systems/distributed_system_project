@@ -211,6 +211,7 @@ class AskBody(BaseModel):
     user_id: str = ""
     user_name: str = "anonymous"
     tier: Optional[str] = None
+    skill: Optional[str] = None
 
 class RegisterBody(BaseModel):
     node_id: str
@@ -390,10 +391,14 @@ async def ask(body: AskBody):
 
     # Register the event BEFORE publishing so the consumer thread can't race ahead
     event = result_consumer.register(request_id)
+    explicit_skill = (body.skill or "").strip() or None
     try:
-        chosen_tier = await producer.publish(
+        chosen_tier, used_skill = await producer.publish(
             request_id, body.prompt, body.user_id, body.user_name,
-            tier_override=body.tier, registry=registry,
+            tier_override=body.tier,
+            skill=explicit_skill,
+            skill_strict=explicit_skill is not None,
+            registry=registry,
         )
     except NoEligibleWorker as e:
         result_consumer.cancel(request_id)
@@ -426,6 +431,7 @@ async def ask(body: AskBody):
         "worker": worker_id,
         "duration": f"{duration_ms / 1000:.1f}s",
         "tier": chosen_tier,
+        "skill": used_skill,
     }
 
 
@@ -440,10 +446,14 @@ async def ask_stream(body: AskBody):
 
     # Register BEFORE publishing so the consumer thread can't race ahead.
     event = result_consumer.register(request_id)
+    explicit_skill = (body.skill or "").strip() or None
     try:
-        chosen_tier = await producer.publish(
+        chosen_tier, used_skill = await producer.publish(
             request_id, body.prompt, body.user_id, body.user_name,
-            tier_override=body.tier, registry=registry,
+            tier_override=body.tier,
+            skill=explicit_skill,
+            skill_strict=explicit_skill is not None,
+            registry=registry,
         )
     except NoEligibleWorker as e:
         result_consumer.cancel(request_id)
@@ -452,7 +462,7 @@ async def ask_stream(body: AskBody):
     async def _gen():
         # Initial event
         yield "event: status\ndata: queued\n\n"
-        yield f"event: routing\ndata: tier={chosen_tier}\n\n"
+        yield f"event: routing\ndata: tier={chosen_tier};skill={used_skill or '-'}\n\n"
 
         start = time.time()
         while True:
@@ -476,7 +486,7 @@ async def ask_stream(body: AskBody):
             # SSE data must not contain raw newlines unless split across multiple data: lines.
             data = response.replace("\n", "\\n")
             yield f"event: result\ndata: {data}\n\n"
-            yield f"event: meta\ndata: worker={worker_id};duration_ms={duration_ms};tier={chosen_tier}\n\n"
+            yield f"event: meta\ndata: worker={worker_id};duration_ms={duration_ms};tier={chosen_tier};skill={used_skill or '-'}\n\n"
             return
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
@@ -674,6 +684,23 @@ async def cluster_nodes():
         }
         for n in nodes
     ]
+
+
+@app.get("/cluster/skills", dependencies=[Depends(require_leader)])
+async def cluster_skills():
+    """
+    Aggregate skills advertised by alive workers across the cluster. Lets
+    clients (and any future React skill picker) discover what skill values
+    are accepted by /ask. Skill names come from worker SKILL.md directory
+    names — see server/worker/skills/ and the load_skills() loader.
+    """
+    nodes = await registry.get_all()
+    skills: set[str] = set()
+    for n in nodes:
+        if n.status == "offline":
+            continue
+        skills.update(n.skills or [])
+    return {"skills": sorted(skills)}
 
 
 @app.get("/cluster/requests", dependencies=[Depends(require_leader)])

@@ -71,3 +71,11 @@ server/leader/config/leader_url.txt
 
 # ── Testing ───────────────────────────
 *.db
+
+# ── Upskill ───────────────────────────
+fastagent.jsonl
+fast-agent.secrets.yaml
+upskill.config.yaml
+runs/
+.fast-agent
+.upskill-runs/

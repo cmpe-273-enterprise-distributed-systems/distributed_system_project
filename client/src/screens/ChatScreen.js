@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { healthCheck, sendPromptStream } from '../api';
+import { getClusterSkills, healthCheck, sendPromptStream } from '../api';
 
 export default function ChatScreen() {
   const { user, logout } = useAuth();
@@ -10,12 +10,18 @@ export default function ChatScreen() {
   const [input,   setInput]   = useState('');
   const [loading, setLoading] = useState(false);
   const [status,  setStatus]  = useState('connecting');
+  // Skill picker: '' means let the leader auto-classify from prompt keywords.
+  // Any other value is treated as a hard override — the leader will 503 if
+  // no worker advertises it.
+  const [availableSkills, setAvailableSkills] = useState([]);
+  const [selectedSkill, setSelectedSkill] = useState('');
   const bottomRef = useRef(null);
 
   useEffect(() => {
     healthCheck()
       .then(() => setStatus('online'))
       .catch(() => setStatus('offline'));
+    getClusterSkills().then(setAvailableSkills).catch(() => setAvailableSkills([]));
   }, []);
 
   useEffect(() => {
@@ -34,7 +40,7 @@ export default function ChatScreen() {
       setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
       let latest = '';
-      const res = await sendPromptStream(text, user?.id, user?.name, ({ type, data }) => {
+      const res = await sendPromptStream(text, user?.id, user?.name, selectedSkill, ({ type, data }) => {
         if (type === 'result') {
           latest = data;
           setMessages(prev => prev.map((m, i) => (i === assistantIndex ? { ...m, content: latest } : m)));
@@ -145,6 +151,22 @@ export default function ChatScreen() {
 
       {/* Input bar */}
       <div style={{ padding: '14px 20px', background: 'var(--surface)', borderTop: '1px solid var(--border)', display: 'flex', gap: '10px', alignItems: 'flex-end', flexShrink: 0 }}>
+        <select
+          value={selectedSkill}
+          onChange={e => setSelectedSkill(e.target.value)}
+          title="Force a specific skill, or leave 'Auto' to let the leader pick from prompt keywords."
+          style={{
+            padding: '12px 14px', borderRadius: 'var(--radius-sm)',
+            border: '1.5px solid var(--border)', background: 'var(--surface-2)',
+            color: 'var(--text)', fontSize: '13px', outline: 'none',
+            fontFamily: 'inherit', cursor: 'pointer', flexShrink: 0,
+          }}
+        >
+          <option value="">Auto</option>
+          {availableSkills.map(s => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
         <input
           value={input} onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && send()}

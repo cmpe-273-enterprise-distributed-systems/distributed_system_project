@@ -43,6 +43,31 @@ TIER_ORDER = ["high-ram", "low-ram", "general"]
 _HIGH_RAM_TOKEN_FLOOR = 2000
 _LOW_RAM_TOKEN_FLOOR = 500
 
+# Keyword sets for the auto-skill classifier. Order matters: first match wins.
+# Used only when the /ask body did not pass an explicit `skill`. Explicit
+# skill from the client always bypasses this map (see main.py /ask handler).
+# Operator updates this alongside skills under server/worker/skills/ — adding
+# a new SKILL.md without a keyword entry just means that skill is never
+# auto-routed, but the React picker (or curl) can still target it.
+_SKILL_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "coding": (
+        "code", "function", "class ", "compile", "syntax", "bug",
+        "python", "javascript", "typescript", "java ", "c++", "rust ",
+        "def ", "import ", "refactor", "lint", "stack trace",
+        "method", "variable", "regex", "exception", "snippet", "script",
+    ),
+    "summarization": (
+        "summarize", "summarise", "summary", "tl;dr", "tldr",
+        "key points", "bullet points", "brief overview", "condense",
+        "shorten", "main ideas", "main points",
+    ),
+    "creative-writing": (
+        "story", "fiction", "poem", "narrative", "screenplay",
+        "character", "plot", "setting", "scene", "dialogue",
+        "creative writing", "short story", "verse",
+    ),
+}
+
 
 class NoEligibleWorker(Exception):
     """Raised by TaskProducer.publish when no tier has any online worker."""
@@ -55,6 +80,23 @@ def _classify_tier(prompt: str) -> str:
     if estimated_tokens > _LOW_RAM_TOKEN_FLOOR:
         return "low-ram"
     return "general"
+
+
+def _classify_skill(prompt: str) -> str | None:
+    """Pick a skill name from _SKILL_KEYWORDS whose keywords appear in `prompt`.
+
+    Returns None if no keywords match — caller should not constrain routing
+    by skill in that case. First-match-wins iteration order, so order in
+    _SKILL_KEYWORDS reflects priority for ambiguous prompts.
+
+    Used as a soft default by TaskProducer.publish — explicit `skill` on the
+    /ask body bypasses this entirely.
+    """
+    lowered = prompt.lower()
+    for skill_name, keywords in _SKILL_KEYWORDS.items():
+        if any(kw in lowered for kw in keywords):
+            return skill_name
+    return None
 
 
 class TaskProducer:
@@ -77,26 +119,62 @@ class TaskProducer:
         user_name: str,
         *,
         tier_override: str | None,
+        skill: str | None,
+        skill_strict: bool,
         registry,
-    ) -> str:
+    ) -> tuple[str, str | None]:
         """
-        Publish to the chosen tier topic. Returns the chosen tier.
+        Publish to the chosen tier topic. Returns (chosen_tier, used_skill).
 
-        1. Resolve tier (override if valid, else token heuristic).
-        2. Walk TIER_ORDER starting at the resolved tier. First tier with at
-           least one eligible (RAM-meeting, non-offline) worker wins.
-        3. If no tier has any eligible worker, raise NoEligibleWorker.
+        Inputs:
+          skill         — explicit skill from /ask body, or None to let the
+                          heuristic auto-classify from the prompt.
+          skill_strict  — True iff the caller passed `skill` explicitly. When
+                          True and no eligible worker has that skill, raise
+                          (HTTP 503). When False (auto-classified or None),
+                          fall back to publishing without a skill filter.
+
+        Algorithm:
+          1. If `skill` is None, call _classify_skill(prompt) — may still be None.
+          2. Resolve tier (override if valid, else token heuristic).
+          3. Walk TIER_ORDER from the resolved tier. First tier with ≥1
+             eligible worker (RAM-meeting, non-offline, advertising `skill`
+             if set) wins.
+          4. Soft fallback: if step 3 came up empty AND skill is set AND
+             not strict, drop the skill filter and walk again.
+          5. If still no eligible worker, raise NoEligibleWorker.
+
+          The `used_skill` returned reflects what was actually attached to
+          the published message — may differ from the requested `skill` if
+          the soft fallback dropped it.
         """
+        if skill is None:
+            skill = _classify_skill(prompt)
+        used_skill = skill
+
         requested_tier = tier_override if tier_override in TIER_RAM_GB else _classify_tier(prompt)
         start_idx = TIER_ORDER.index(requested_tier)
 
-        chosen_tier: str | None = None
-        for tier in TIER_ORDER[start_idx:]:
-            if await registry.eligible(TIER_RAM_GB[tier]):
-                chosen_tier = tier
-                break
+        async def _walk(filter_skill: str | None) -> str | None:
+            for tier in TIER_ORDER[start_idx:]:
+                if await registry.eligible(TIER_RAM_GB[tier], skill=filter_skill):
+                    return tier
+            return None
+
+        chosen_tier = await _walk(used_skill)
+
+        # Soft fallback: auto-classified (or otherwise non-strict) skill found
+        # nothing — drop the skill filter and try again. A strict (explicit)
+        # skill mismatch falls through to the raise below.
+        if chosen_tier is None and used_skill and not skill_strict:
+            used_skill = None
+            chosen_tier = await _walk(None)
 
         if chosen_tier is None:
+            if skill_strict and skill:
+                raise NoEligibleWorker(
+                    f"No worker advertising skill {skill!r} is online to handle this task."
+                )
             raise NoEligibleWorker("No worker is online to handle this task.")
 
         topic = f"tasks-{chosen_tier}"
@@ -109,9 +187,10 @@ class TaskProducer:
             "topic": topic,
             "tier": chosen_tier,
             "requested_tier": requested_tier,
+            "skill": used_skill,
         })
         self._producer.flush()
-        return chosen_tier
+        return chosen_tier, used_skill
 
 
 class ResultConsumer:

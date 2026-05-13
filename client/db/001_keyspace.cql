@@ -1,5 +1,7 @@
-CREATE KEYSPACE IF NOT EXISTS web_app
-WITH replication = {
-  'class': 'SimpleStrategy',
-  'replication_factor': 1
-};
+-- For Astra: keyspace is pre-created at database creation. This statement would fail.
+-- Uncomment below only if using local Cassandra:
+-- CREATE KEYSPACE IF NOT EXISTS web_app
+-- WITH replication = {
+--   'class': 'SimpleStrategy',
+--   'replication_factor': 3
+-- };

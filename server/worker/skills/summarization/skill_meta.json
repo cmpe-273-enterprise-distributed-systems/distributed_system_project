@@ -1,0 +1,12 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "generated_by": null,
+    "generated_at": "2026-05-13T08:32:17.543763Z",
+    "source_task": "Summarize long text into 3-5 concise bullet points",
+    "test_pass_rate": 1.0,
+    "license": null,
+    "compatibility": null
+  },
+  "tests": []
+}

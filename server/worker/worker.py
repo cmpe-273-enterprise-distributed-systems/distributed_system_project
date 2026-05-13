@@ -14,13 +14,13 @@ Run:
   python worker.py
 """
 
-import glob
 import json
 import os
 import signal
 import sys
 import threading
 import time
+from pathlib import Path
 
 import httpx
 import psutil
@@ -123,10 +123,46 @@ def get_ollama_models() -> list[str]:
         return []
 
 
-def get_skills() -> list[str]:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    skill_files = glob.glob(os.path.join(script_dir, "*.skill"))
-    return [os.path.splitext(os.path.basename(f))[0] for f in skill_files]
+SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+
+# Loaded once at startup by load_skills(); read by process_task to inject the
+# matching SKILL.md content as Ollama's `system` prompt for skill-tagged tasks.
+_skills: dict[str, str] = {}
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Drop a YAML frontmatter block at the top of `text` if present.
+
+    Upskill writes SKILL.md with `---\\nname: ...\\ndescription: ...\\n---\\n`
+    at the top. The body below it is the actual instruction text we want
+    Ollama to see as the system prompt; the frontmatter would just be visible
+    markdown in the model's context.
+    """
+    if not text.startswith("---"):
+        return text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return text
+    return parts[2].lstrip("\n")
+
+
+def load_skills() -> list[str]:
+    """Discover Upskill-format skills under SKILLS_DIR.
+
+    A skill is any subdirectory containing a SKILL.md file; the directory
+    name is the canonical skill key used for routing and registration.
+    Contents are cached in _skills (keyed by directory name) so process_task
+    can inject them at consume time without re-reading per request. Returns
+    a sorted list of discovered skill names for the /register payload.
+    """
+    _skills.clear()
+    if not SKILLS_DIR.is_dir():
+        return []
+    for entry in sorted(SKILLS_DIR.iterdir()):
+        skill_md = entry / "SKILL.md"
+        if entry.is_dir() and skill_md.is_file():
+            _skills[entry.name] = _strip_frontmatter(skill_md.read_text(encoding="utf-8"))
+    return sorted(_skills.keys())
 
 # ── Shared state (only written from main thread or heartbeat thread) ───────────
 
@@ -154,7 +190,7 @@ def register() -> str:
     global _effective_model
     detected_models = get_ollama_models()
     _effective_model = detected_models[0] if detected_models else MODEL
-    effective_skills = get_skills() or SKILLS
+    effective_skills = load_skills() or SKILLS
 
     print(f"[{NODE_ID}] RAM: {RAM_GB} GB  Model: {_effective_model}  Skills: {effective_skills}")
 
@@ -240,12 +276,29 @@ def process_task(kafka: WorkerKafka, task: dict):
 
     request_id = task.get("request_id", "unknown")
     prompt = task.get("prompt", "")
-    print(f"[{NODE_ID}] Processing {request_id}: {prompt[:80]}…")
+    requested_skill = task.get("skill")
+
+    # Look up the SKILL.md content for the task's skill, if any. If the
+    # leader's preflight routed a skill-tagged task to a worker that doesn't
+    # have it (Kafka can do this within a tier topic), degrade silently —
+    # run the prompt without a system context and warn. Hard-rejecting would
+    # leave the request hanging for the elected leader's TASK_TIMEOUT.
+    system_prompt: str | None = None
+    if requested_skill:
+        system_prompt = _skills.get(requested_skill)
+        if system_prompt is None:
+            print(
+                f"[{NODE_ID}] WARN: task {request_id} requests skill "
+                f"{requested_skill!r} but this worker only has "
+                f"{sorted(_skills.keys())}. Running without system prompt."
+            )
+
+    print(f"[{NODE_ID}] Processing {request_id} (skill={requested_skill}): {prompt[:80]}…")
 
     _current_status = "busy"
     start = time.time()
     try:
-        response = generate(_effective_model, prompt)
+        response = generate(_effective_model, prompt, system=system_prompt)
         duration_ms = int((time.time() - start) * 1000)
         kafka.publish_result(request_id, response, duration_ms)
         _tasks_completed += 1
