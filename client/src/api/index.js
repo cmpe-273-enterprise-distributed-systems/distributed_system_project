@@ -10,7 +10,14 @@
 
 import axios from 'axios';
 
-const DISCOVERY_URL = (process.env.REACT_APP_DISCOVERY_URL || '').trim();
+// Upstash Redis REST endpoint where the leader publishes its URL.
+// The READ-ONLY token is intentionally exposed to the client bundle — its
+// scope is reading from this single database, and the value behind the
+// `leader` key (a routable URL) is broadcast across the cluster anyway.
+// CORS must be enabled in the Upstash dashboard for the client's origin
+// (Database → REST API → Allowed Origins).
+const UPSTASH_REDIS_REST_URL = (process.env.REACT_APP_UPSTASH_REDIS_REST_URL || '').trim().replace(/\/+$/, '');
+const UPSTASH_REDIS_REST_READ_ONLY_TOKEN = (process.env.REACT_APP_UPSTASH_REDIS_REST_READ_ONLY_TOKEN || '').trim();
 const FALLBACK_LEADER_URL = (process.env.REACT_APP_LEADER_FALLBACK_URL || 'http://localhost:8000').trim();
 // Backwards-compatible: older env used an IP only (no scheme/port).
 const LEGACY_LEADER_IP = (process.env.REACT_APP_LEADER_IP || '').trim();
@@ -28,11 +35,30 @@ function _normalizeBase(url) {
 }
 
 async function _resolveLeaderFromDiscovery() {
-  if (!DISCOVERY_URL) return null;
-  const res = await fetch(DISCOVERY_URL, { method: 'GET' });
-  if (!res.ok) return null;
-  const txt = (await res.text()).trim();
-  return _normalizeBase(txt);
+  if (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_READ_ONLY_TOKEN) return null;
+  try {
+    const res = await fetch(`${UPSTASH_REDIS_REST_URL}/get/leader`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_READ_ONLY_TOKEN}` },
+    });
+    if (!res.ok) return null;
+    // Upstash envelopes the value in {"result": "<stored string>"}. The leader
+    // publishes a JSON-encoded record (see server/leader/discovery.py) so the
+    // stored string itself parses to {leader_url, node_id, cluster_id, updated_at}.
+    const payload = await res.json();
+    const raw = payload?.result;
+    if (!raw) return null;
+    let leaderUrl;
+    try {
+      leaderUrl = JSON.parse(raw)?.leader_url;
+    } catch {
+      // Legacy publishers may have stored a plain URL string.
+      leaderUrl = String(raw);
+    }
+    return _normalizeBase((leaderUrl || '').trim());
+  } catch {
+    return null;
+  }
 }
 
 function _fromLegacyIp(ip) {
