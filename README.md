@@ -469,3 +469,4 @@ curl http://<A_IP>:8000/metrics
 | `Frontend won't start` | Run `npm install` in `client/` |
 | Grafana shows no data | Confirm leader is running; check `http://localhost:9090/targets` in Prometheus |
 | `/ask` returns 503 immediately | No eligible workers online — start at least one worker |
+--
