@@ -5,6 +5,11 @@ Storage:
   Key   = "leader"
   Value = JSON-encoded record stored as a Redis string:
             {"leader_url": "...", "node_id": "...", "cluster_id": "...", "updated_at": int}
+  TTL   = LEADER_KEY_TTL_S (default 900 s). The leader monitor publishes
+          every POLL_INTERVAL_S=5 s, so a 15-minute TTL gives 180x headroom
+          before a stale entry goes live. Without TTL, a crashed leader's
+          URL would stay in Redis forever and misdirect workers after a
+          cluster wipe.
 
 REST API (https://upstash.com/docs/redis/features/restapi):
   POST {UPSTASH_REDIS_REST_URL}/set/leader   body = value         → {"result":"OK"}
@@ -26,6 +31,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _FILE_PATH = Path(__file__).parent / "config" / "leader_url.txt"
+LEADER_KEY_TTL_S = 900  # 15 minutes; leader publishes every 5 s so there is 180x headroom
 
 
 class DiscoveryClient:
@@ -59,13 +65,20 @@ class DiscoveryClient:
 
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
+                # Use the Redis pipeline endpoint to SET and EXPIRE atomically.
+                # This prevents a stale leader URL persisting in Redis forever
+                # if the leader crashes before the key is manually cleared.
+                pipeline = [
+                    ["SET", "leader", record],
+                    ["EXPIRE", "leader", LEADER_KEY_TTL_S],
+                ]
                 r = await client.post(
-                    f"{self._url}/set/leader",
-                    content=record,
-                    headers=self._auth_headers(),
+                    f"{self._url}/pipeline",
+                    content=json.dumps(pipeline),
+                    headers={**self._auth_headers(), "Content-Type": "application/json"},
                 )
                 r.raise_for_status()
-                logger.info("Discovery updated -> %s", leader_url)
+                logger.info("Discovery updated -> %s (TTL=%ds)", leader_url, LEADER_KEY_TTL_S)
                 return True
         except Exception as exc:
             logger.warning("Discovery publish failed: %s", exc)
