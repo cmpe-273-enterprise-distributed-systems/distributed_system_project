@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -237,16 +237,16 @@ class SignupBody(BaseModel):
     role: str = "client"
 
 class AskBody(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=1, max_length=10000)
     user_id: str = ""
     user_name: str = "anonymous"
     tier: Optional[str] = None
     skill: Optional[str] = None
 
 class RegisterBody(BaseModel):
-    node_id: str
-    ram_gb: int
-    model: str
+    node_id: str = Field(min_length=1)
+    ram_gb: int = Field(ge=1)
+    model: str = Field(min_length=1)
     skills: list[str]
 
 class HeartbeatBody(BaseModel):
