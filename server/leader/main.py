@@ -474,6 +474,7 @@ async def ask(body: AskBody):
     )
 
     return {
+        "request_id": request_id,
         "response": result.get("response", ""),
         "worker": worker_id,
         "duration": f"{duration_ms / 1000:.1f}s",
@@ -533,7 +534,7 @@ async def ask_stream(body: AskBody):
             # SSE data must not contain raw newlines unless split across multiple data: lines.
             data = response.replace("\n", "\\n")
             yield f"event: result\ndata: {data}\n\n"
-            yield f"event: meta\ndata: worker={worker_id};duration_ms={duration_ms};tier={chosen_tier};skill={used_skill or '-'}\n\n"
+            yield f"event: meta\ndata: request_id={request_id};worker={worker_id};duration_ms={duration_ms};tier={chosen_tier};skill={used_skill or '-'}\n\n"
             return
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
