@@ -408,15 +408,19 @@ async def server_local_node():
 async def login(body: LoginBody):
     user = await get_user_by_email(body.email)
     if not user or user["password_hash"] != _hash(body.password):
+        logger.warning("auth.login.failed", extra={"email": body.email})
         raise HTTPException(401, "Invalid email or password.")
+    logger.info("auth.login.ok", extra={"user_id": user["id"], "email": body.email, "role": user["role"]})
     return {k: v for k, v in user.items() if k != "password_hash"}
 
 
 @app.post("/auth/signup", dependencies=[Depends(require_leader)])
 async def signup(body: SignupBody):
     if await get_user_by_email(body.email):
+        logger.warning("auth.signup.conflict", extra={"email": body.email})
         raise HTTPException(409, "An account with that email already exists.")
     user_id = await create_user(body.name, body.email, body.password, body.role)
+    logger.info("auth.signup.ok", extra={"user_id": user_id, "email": body.email, "role": body.role})
     return {"id": user_id, "name": body.name, "email": body.email, "role": body.role}
 
 
