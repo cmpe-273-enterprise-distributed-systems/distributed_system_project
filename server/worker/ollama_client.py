@@ -1,6 +1,8 @@
+import os
+
 import httpx
 
-OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 
 
 def generate(model: str, prompt: str, system: str | None = None, timeout: int = 300) -> str:
