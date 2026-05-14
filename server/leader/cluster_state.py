@@ -177,7 +177,7 @@ def join_token_issue(provided: str) -> Optional[str]:
     got = (provided or "").strip()
     if not _STATE.join_token or not _STATE.join_token_expires_at:
         return "no_active_join_token"
-    if got != _STATE.join_token:
+    if not secrets.compare_digest(got, _STATE.join_token):
         return "join_token_mismatch"
     if _now() > int(_STATE.join_token_expires_at):
         return "join_token_expired"
