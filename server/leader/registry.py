@@ -2,6 +2,8 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 
+from metrics import nodes_active, nodes_total, worker_ram_gb
+
 # A node is declared offline if no heartbeat is received within this window
 HEARTBEAT_TIMEOUT_S = 15
 
@@ -23,6 +25,10 @@ class Registry:
         self._nodes: dict[str, NodeInfo] = {}
         self._lock = asyncio.Lock()
 
+    def _update_gauges(self) -> None:
+        nodes_total.set(len(self._nodes))
+        nodes_active.set(sum(1 for n in self._nodes.values() if n.status != "offline"))
+
     async def register(self, node_id: str, ip: str, ram_gb: int, model: str, skills: list[str]):
         async with self._lock:
             self._nodes[node_id] = NodeInfo(
@@ -35,6 +41,8 @@ class Registry:
                 tasks_completed=0,
                 last_seen=time.time(),
             )
+            self._update_gauges()
+            worker_ram_gb.labels(worker_id=node_id).set(ram_gb)
 
     async def heartbeat(self, node_id: str, status: str, tasks_completed: int) -> bool:
         """Update a node's last-seen timestamp. Returns False if node is unknown."""
@@ -45,6 +53,7 @@ class Registry:
             node.status = status
             node.tasks_completed = tasks_completed
             node.last_seen = time.time()
+            self._update_gauges()
             return True
 
     async def get_all(self) -> list[NodeInfo]:
@@ -76,3 +85,4 @@ class Registry:
                 for node in self._nodes.values():
                     if node.status != "offline" and (now - node.last_seen) > HEARTBEAT_TIMEOUT_S:
                         node.status = "offline"
+                self._update_gauges()

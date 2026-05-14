@@ -25,6 +25,7 @@ import logging
 
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import NoBrokersAvailable, NodeNotReadyError
+from metrics import tasks_by_tier_total, tasks_dispatched_total, prompt_tokens_estimated
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,9 @@ class TaskProducer:
             "skill": used_skill,
         })
         self._producer.flush()
+        tasks_dispatched_total.labels(topic=topic).inc()
+        tasks_by_tier_total.labels(tier=chosen_tier).inc()
+        prompt_tokens_estimated.observe(len(prompt) // 4)
         return chosen_tier, used_skill
 
 

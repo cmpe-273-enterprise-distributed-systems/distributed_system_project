@@ -1,0 +1,90 @@
+{
+  "title": "AI Gateway",
+  "uid": "ai-gateway",
+  "schemaVersion": 38,
+  "version": 2,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Worker Assignment by RAM Tier",
+      "type": "piechart",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "expr": "gateway_tasks_by_tier_total",
+          "legendFormat": "{{tier}}"
+        }
+      ],
+      "options": { "pieType": "pie" }
+    },
+    {
+      "id": 2,
+      "title": "p95 Estimated Prompt Tokens",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "expr": "histogram_quantile(0.95, rate(gateway_prompt_tokens_estimated_bucket[5m]))",
+          "legendFormat": "p95 tokens"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Tasks per Worker",
+      "type": "barchart",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "expr": "gateway_tasks_completed_by_worker_total",
+          "legendFormat": "{{worker_id}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Worker RAM (GB)",
+      "type": "barchart",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "expr": "gateway_worker_ram_gb",
+          "legendFormat": "{{worker_id}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Active Nodes",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 8, "w": 4, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "expr": "gateway_nodes_active",
+          "legendFormat": "active"
+        }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none" }
+    },
+    {
+      "id": 6,
+      "title": "p95 /ask Response Time",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "expr": "histogram_quantile(0.95, rate(gateway_ask_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95 latency (s)"
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import time
 import uuid
@@ -8,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -45,6 +46,19 @@ from node_config import load_or_create_node_config
 from registry import Registry
 from tailscale_utils import get_advertise_host
 from system_checks import run_all_requirements_checks
+from logging_config import setup_logging
+from metrics import (
+    ask_duration_seconds,
+    http_request_duration_seconds,
+    http_requests_total,
+    tasks_completed_total,
+    tasks_completed_by_worker_total,
+    tasks_failed_total,
+)
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+setup_logging(os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger(__name__)
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 TASK_TIMEOUT = int(os.getenv("TASK_TIMEOUT", "60"))
@@ -179,6 +193,22 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _metrics_middleware(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed = time.perf_counter() - start
+    route = request.scope.get("route")
+    endpoint = route.path if route else request.url.path
+    http_requests_total.labels(
+        method=request.method,
+        endpoint=endpoint,
+        status_code=str(response.status_code),
+    ).inc()
+    http_request_duration_seconds.labels(endpoint=endpoint).observe(elapsed)
+    return response
+
+
 @app.get("/join", response_class=HTMLResponse, include_in_schema=False)
 @app.get("/join/", response_class=HTMLResponse, include_in_schema=False)
 async def browser_hint_join(request: Request):
@@ -262,6 +292,11 @@ class SyncRequest(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics_endpoint():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # ── Server / system readiness checks ──────────────────────────────────────────
@@ -388,6 +423,7 @@ async def signup(body: SignupBody):
 @app.post("/ask", dependencies=[Depends(require_leader)])
 async def ask(body: AskBody):
     request_id = str(uuid.uuid4())
+    _t0 = time.perf_counter()
 
     # Register the event BEFORE publishing so the consumer thread can't race ahead
     event = result_consumer.register(request_id)
@@ -402,23 +438,34 @@ async def ask(body: AskBody):
         )
     except NoEligibleWorker as e:
         result_consumer.cancel(request_id)
+        tasks_failed_total.inc()
         raise HTTPException(503, str(e))
 
     try:
         await asyncio.wait_for(event.wait(), timeout=TASK_TIMEOUT)
     except asyncio.TimeoutError:
         result_consumer.cancel(request_id)
+        tasks_failed_total.inc()
+        ask_duration_seconds.observe(time.perf_counter() - _t0)
         raise HTTPException(504, "No worker responded in time.")
 
     result = result_consumer.pop_result(request_id)
     if not result:
+        tasks_failed_total.inc()
+        ask_duration_seconds.observe(time.perf_counter() - _t0)
         raise HTTPException(500, "Result missing after event fired.")
 
     if result.get("error"):
+        tasks_failed_total.inc()
+        ask_duration_seconds.observe(time.perf_counter() - _t0)
         raise HTTPException(500, result["error"])
 
     duration_ms = result.get("duration_ms", 0)
     worker_id = result.get("worker_id", "unknown")
+
+    tasks_completed_total.inc()
+    tasks_completed_by_worker_total.labels(worker_id=worker_id).inc()
+    ask_duration_seconds.observe(time.perf_counter() - _t0)
 
     await save_request(
         request_id, body.user_id, body.user_name,
