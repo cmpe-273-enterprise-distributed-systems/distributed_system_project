@@ -8,6 +8,7 @@ A distributed system where laptops pool compute over a VPN to run local AI model
 
 **Conlyn:** Kafka management, worker and leader node consumer/producer functionality, external data store and service discovery integration, skills management  
 **Shivansh**: Contributed in designing the system architecture, Implemented the frontends and the hardware profiling specifications (RAM info, models, and skills extraction) during worker node registration. 
+**Divya:** Implemented the distributed leader election, API endpoints, failover system and the full observability stack (Prometheus metrics, Grafana dashboards, structured JSON logging).
 
 ---
 
