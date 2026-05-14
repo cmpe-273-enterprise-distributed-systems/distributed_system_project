@@ -131,7 +131,7 @@ async def lifespan(app: FastAPI):
 
     producer = TaskProducer(KAFKA_BROKER)
     result_consumer = ResultConsumer(KAFKA_BROKER, cfg["node_id"])
-    result_consumer.start(asyncio.get_event_loop())
+    result_consumer.start(asyncio.get_running_loop())
 
     # Ensure this node is always present in known_nodes on startup.
     add_or_update_node({

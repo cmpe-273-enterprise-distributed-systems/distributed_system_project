@@ -109,13 +109,13 @@ def _prep(key: str, cql: str) -> PreparedStatement:
 
 async def _exec(stmt: PreparedStatement, params: tuple = ()):
     """Run a prepared statement with bound params off the event loop."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_session().execute, stmt, params)
 
 
 async def init_db() -> None:
     """Connect (with retry) and confirm the keyspace is reachable."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     for attempt in range(10):
         try:
             session = await loop.run_in_executor(None, _get_session)
