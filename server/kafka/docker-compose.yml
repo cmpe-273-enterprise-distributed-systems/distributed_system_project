@@ -1,49 +1,44 @@
-# Multi-broker Kafka cluster — run this on each leader-eligible laptop.
+# Single-broker Kafka — run this on the one designated Kafka host laptop.
 #
-# Each laptop runs:
-#     cd server/kafka && cp .env.example .env && docker compose up -d
+# Setup:
+#     cd server/kafka && cp .env.example .env
+#     # Edit KAFKA_ADVERTISED_HOST to this laptop's Tailscale IP
+#     docker compose up -d
 #
-# The required per-laptop env vars are KAFKA_NODE_ID, KAFKA_ADVERTISED_HOST,
-# KAFKA_CLUSTER_ID, and KAFKA_QUORUM_VOTERS. See .env.example next to this file
-# for the canonical setup.
+# All other laptops (leader, workers) set KAFKA_BROKER=<this laptop's Tailscale IP>:9092
+# in their server/leader/.env or server/worker/.env.
 #
 # Cassandra is NOT included here — it lives in ../../docker-compose.yml at the repo
-# root and should run on exactly one designated host:  docker compose up cassandra
+# root and should run on exactly one designated host: docker compose up cassandra
 
 services:
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka-broker
     hostname: kafka
+    restart: unless-stopped
     ports:
-      - "9092:9092"   # client + inter-broker (OUTSIDE listener)
-      - "9093:9093"   # KRaft controller quorum
+      - "9092:9092"   # clients across Tailscale VPN
+      - "9093:9093"   # KRaft controller (local only)
     environment:
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_NODE_ID: ${KAFKA_NODE_ID:?KAFKA_NODE_ID is required (1, 2, or 3)}
-      CLUSTER_ID: ${KAFKA_CLUSTER_ID:?KAFKA_CLUSTER_ID is required (must match on every broker)}
-      KAFKA_CONTROLLER_QUORUM_VOTERS: ${KAFKA_QUORUM_VOTERS:?KAFKA_QUORUM_VOTERS is required (e.g. '1@100.64.0.5:9093,2@...,3@...')}
+      KAFKA_NODE_ID: 1
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:?KAFKA_CLUSTER_ID is required}
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
-      # Three listeners: CONTROLLER (KRaft quorum), INSIDE (only used by the
-      # kafka-init container in the same docker network), OUTSIDE (clients and
-      # other brokers across the Tailscale VPN).
-      KAFKA_LISTENERS: CONTROLLER://0.0.0.0:9093,INSIDE://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      KAFKA_LISTENERS: CONTROLLER://kafka:9093,INSIDE://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:29092,OUTSIDE://${KAFKA_ADVERTISED_HOST:?KAFKA_ADVERTISED_HOST is required (this laptop's Tailscale IP)}:9092
       KAFKA_INTER_BROKER_LISTENER_NAME: OUTSIDE
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
     volumes:
       - kafka_data:/var/lib/kafka/data
 
   kafka-init:
-    # Runs on every broker laptop. Topic creation requires all 3 brokers to be
-    # registered (RF=3 fails otherwise), so this container retries each topic
-    # until the cluster is complete. --if-not-exists makes simultaneous attempts
-    # from multiple laptops idempotent.
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka-init
     depends_on:
@@ -54,17 +49,13 @@ services:
       - -c
       - |
         until kafka-topics --bootstrap-server kafka:29092 --list > /dev/null 2>&1; do
-          echo 'Waiting for local Kafka API...'; sleep 2
+          echo 'Waiting for Kafka...'; sleep 2
         done
         for topic in tasks-high-ram tasks-low-ram tasks-general completed-tasks; do
-          until kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
-              --topic "$$topic" --partitions 4 --replication-factor 3 \
-              --config min.insync.replicas=2; do
-            echo "Topic $$topic pending (waiting for full broker quorum)..."
-            sleep 5
-          done
+          kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+              --topic "$$topic" --partitions 4 --replication-factor 1
         done
-        echo 'All topics ensured: tasks-high-ram, tasks-low-ram, tasks-general, completed-tasks'
+        echo 'Topics ready: tasks-high-ram, tasks-low-ram, tasks-general, completed-tasks'
 
 volumes:
   kafka_data:

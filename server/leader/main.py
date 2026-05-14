@@ -80,17 +80,16 @@ python app.py --port 8001 --leader {leader_base}</pre>
 
 
 registry = Registry()
-producer = TaskProducer(KAFKA_BROKER)
+producer: Optional[TaskProducer] = None
 discovery = DiscoveryClient()
-# ResultConsumer needs the local node_id to scope its consumer group
-# (see kafka_client.ResultConsumer docstring) — constructed inside the
-# lifespan after node_config is loaded.
+# Both producer and result_consumer are constructed inside lifespan after
+# Kafka is confirmed reachable. result_consumer also needs node_id.
 result_consumer: Optional[ResultConsumer] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global result_consumer
+    global producer, result_consumer
 
     await init_db()
     asyncio.create_task(registry.check_timeouts())
@@ -116,6 +115,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"WARNING: ensure_topics failed: {exc}. Topics will auto-create at RF=1 — case-B failover may hang.")
 
+    producer = TaskProducer(KAFKA_BROKER)
     result_consumer = ResultConsumer(KAFKA_BROKER, cfg["node_id"])
     result_consumer.start(asyncio.get_event_loop())
 

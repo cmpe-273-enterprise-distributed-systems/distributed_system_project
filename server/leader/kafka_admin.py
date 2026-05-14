@@ -29,7 +29,7 @@ import time
 from typing import Iterable
 
 from kafka.admin import ConfigResource, ConfigResourceType, KafkaAdminClient, NewTopic
-from kafka.errors import KafkaError, NoBrokersAvailable, TopicAlreadyExistsError
+from kafka.errors import KafkaError, NoBrokersAvailable, NodeNotReadyError, TopicAlreadyExistsError
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +61,10 @@ def _connect_admin(brokers: list[str], retries: int) -> KafkaAdminClient:
                 bootstrap_servers=brokers,
                 client_id="leader-topic-provisioner",
             )
-        except NoBrokersAvailable as exc:
+        except (NoBrokersAvailable, NodeNotReadyError) as exc:
             last_exc = exc
             logger.info(
-                "Kafka admin: no brokers reachable yet (attempt %d/%d): %s",
+                "Kafka admin: broker not ready yet (attempt %d/%d): %s",
                 attempt, retries, exc,
             )
             time.sleep(2)

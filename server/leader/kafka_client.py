@@ -21,7 +21,12 @@ import threading
 import time
 from typing import Any
 
+import logging
+
 from kafka import KafkaConsumer, KafkaProducer
+from kafka.errors import NoBrokersAvailable, NodeNotReadyError
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_brokers(s: str) -> list[str]:
@@ -100,16 +105,27 @@ def _classify_skill(prompt: str) -> str | None:
 
 
 class TaskProducer:
-    def __init__(self, bootstrap_servers: str):
-        self._producer = KafkaProducer(
-            bootstrap_servers=_parse_brokers(bootstrap_servers),
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            # acks="all" is required for the topic-level min.insync.replicas
-            # setting to take effect. Without it, the producer is satisfied as
-            # soon as the partition leader broker acks, and a single broker
-            # death (case B) could lose acknowledged writes.
-            acks="all",
-        )
+    def __init__(self, bootstrap_servers: str, *, retries: int = 6):
+        brokers = _parse_brokers(bootstrap_servers)
+        last_exc: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                self._producer = KafkaProducer(
+                    bootstrap_servers=brokers,
+                    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                    acks="all",
+                )
+                return
+            except (NoBrokersAvailable, NodeNotReadyError) as exc:
+                last_exc = exc
+                logger.info(
+                    "Kafka producer: broker not ready yet (attempt %d/%d): %s",
+                    attempt, retries, exc,
+                )
+                time.sleep(2)
+        raise RuntimeError(
+            f"TaskProducer: could not reach any broker in {brokers!r} after {retries} attempts"
+        ) from last_exc
 
     async def publish(
         self,
