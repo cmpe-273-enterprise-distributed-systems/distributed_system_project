@@ -4,7 +4,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -252,9 +252,9 @@ class RegisterBody(BaseModel):
     skills: list[str]
 
 class HeartbeatBody(BaseModel):
-    node_id: str
-    status: str
-    tasks_completed: int
+    node_id: str = Field(min_length=1)
+    status: Literal["idle", "busy", "offline"]
+    tasks_completed: int = Field(ge=0)
 
 class UpdateRoleBody(BaseModel):
     role: str
