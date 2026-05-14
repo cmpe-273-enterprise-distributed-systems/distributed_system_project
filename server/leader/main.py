@@ -62,6 +62,8 @@ logger = logging.getLogger(__name__)
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 TASK_TIMEOUT = int(os.getenv("TASK_TIMEOUT", "60"))
+_raw_cors = os.getenv("CORS_ORIGINS", "*")
+CORS_ORIGINS: list[str] = [o.strip() for o in _raw_cors.split(",") if o.strip()] or ["*"]
 # Browser dashboard (server/ui) — shown when someone opens /join or /servers on the leader by mistake.
 _SERVER_UI_BASE = os.getenv("SERVER_UI_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
 
@@ -187,7 +189,7 @@ def require_leader(request: Request) -> None:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
