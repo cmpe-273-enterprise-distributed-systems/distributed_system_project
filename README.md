@@ -7,6 +7,7 @@ A distributed system where laptops pool compute over a VPN to run local AI model
 ## Group Contributions
 
 **Conlyn:** Kafka management, worker and leader node consumer/producer functionality, external data store and service discovery integration, skills management
+**Shivansh**: Contributed in designing the system architecture, Implemented the frontends and the hardware profiling specifications (RAM info, models, and skills extraction) during worker node registration. 
 
 ---
 
