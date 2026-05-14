@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 
 from metrics import nodes_active, nodes_total, worker_ram_gb
+
+logger = logging.getLogger(__name__)
 
 # A node is declared offline if no heartbeat is received within this window
 HEARTBEAT_TIMEOUT_S = 15
@@ -80,9 +83,12 @@ class Registry:
         """Background loop: marks nodes offline when heartbeats stop arriving."""
         while True:
             await asyncio.sleep(5)
-            now = time.time()
-            async with self._lock:
-                for node in self._nodes.values():
-                    if node.status != "offline" and (now - node.last_seen) > HEARTBEAT_TIMEOUT_S:
-                        node.status = "offline"
-                self._update_gauges()
+            try:
+                now = time.time()
+                async with self._lock:
+                    for node in self._nodes.values():
+                        if node.status != "offline" and (now - node.last_seen) > HEARTBEAT_TIMEOUT_S:
+                            node.status = "offline"
+                    self._update_gauges()
+            except Exception:
+                logger.exception("check_timeouts: unexpected error in timeout sweep")
